@@ -54,11 +54,11 @@ class BizyAirGenerateImagePlugin(BasePlugin):
             "send_text_before_image": ConfigField(
                 type=bool,
                 default=False,
-                description="是否在发送图片前额外发送一段提示文本。默认关闭，避免与 reply action 职责重叠。",
+                description="是否在发送图片前额外发送一段提示文本",
             ),
             "text_before_image": ConfigField(
                 type=str,
-                default="我给你生成了一张图片。",
+                default="我给你生成了一张图片",
                 description="发送图片前的提示文本，仅在开启 send_text_before_image 时生效。",
             ),
             "action_require": ConfigField(type=str,

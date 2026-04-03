@@ -89,15 +89,11 @@ class BizyAirMcpClient:
 
     def _validate_aspect_ratio(self, aspect_ratio: str) -> None:
         if aspect_ratio not in self.ALLOWED_ASPECT_RATIOS:
-            raise ValueError(
-                f"aspect_ratio 非法: {aspect_ratio}，必须是 {sorted(self.ALLOWED_ASPECT_RATIOS)} 中之一"
-            )
+            raise ValueError(f"aspect_ratio 非法: {aspect_ratio}，必须是 {sorted(self.ALLOWED_ASPECT_RATIOS)} 中之一")
 
     def _validate_resolution(self, resolution: str) -> None:
         if resolution not in self.ALLOWED_RESOLUTIONS:
-            raise ValueError(
-                f"resolution 非法: {resolution}，必须是 {sorted(self.ALLOWED_RESOLUTIONS)} 中之一"
-            )
+            raise ValueError(f"resolution 非法: {resolution}，必须是 {sorted(self.ALLOWED_RESOLUTIONS)} 中之一")
 
     async def generate_image(
             self,
@@ -148,21 +144,15 @@ class BizyAirMcpClient:
             raise BizyAirMcpError(f"MCP tool 调用失败: {result}")
 
         if result.structuredContent is not None:
-            raise BizyAirMcpProtocolError(
-                f"返回 structuredContent 不为 None，与已确认格式不符: {result.structuredContent}"
-            )
+            raise BizyAirMcpProtocolError(f"返回 structuredContent 不为 None，与预期不符: {result.structuredContent}")
 
         if len(result.content) != 1:
-            raise BizyAirMcpProtocolError(
-                f"返回 content 数量不是 1，与已确认格式不符: {len(result.content)}"
-            )
+            raise BizyAirMcpProtocolError(f"返回 content 数量不是 1，与预期不符: {len(result.content)}")
 
         item = result.content[0]
 
         if not isinstance(item, TextContent):
-            raise BizyAirMcpProtocolError(
-                f"返回 content[0] 不是 TextContent，与已确认格式不符: {type(item)}"
-            )
+            raise BizyAirMcpProtocolError(f"返回 content[0] 不是 TextContent，与预期不符: {type(item)}")
 
         image_url = item.text.strip()
 
@@ -171,7 +161,7 @@ class BizyAirMcpClient:
 
         if not image_url.startswith("http://") and not image_url.startswith("https://"):
             raise BizyAirMcpProtocolError(
-                f"返回的 text 不是合法 URL，与已确认格式不符: {image_url}"
+                f"返回的 text 不是合法 URL，与预期不符: {image_url}"
             )
 
         return BizyAirImageResult(image_url=image_url)
