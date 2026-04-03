@@ -94,7 +94,7 @@ class GenerateImageAction(BaseAction):
             action_prompt_display=self._build_action_display(prompt, aspect_ratio, resolution),
             action_done=True,
         )
-        return True, "图片生成并发送完成"
+        return True, f"图片生成并发送完成，使用的生图prompt: {prompt}"
 
     def _get_prompt(self) -> str:
         prompt = self.action_data.get("prompt", "")
