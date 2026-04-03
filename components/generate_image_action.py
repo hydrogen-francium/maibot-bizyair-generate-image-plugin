@@ -4,7 +4,6 @@ from typing import Optional, Tuple
 from src.common.logger import get_logger
 from src.plugin_system import BaseAction
 from src.plugin_system.base.component_types import ActionActivationType
-
 from ..bizyair_mcp_client import BizyAirMcpClient, BizyAirMcpError, BizyAirMcpProtocolError
 
 logger = get_logger("bizyair_generate_image_plugin")
@@ -48,17 +47,12 @@ class GenerateImageAction(BaseAction):
         resolution = self._get_resolution()
         timeout = self._get_timeout()
 
-        logger.info(
-            f"{self.log_prefix} 开始生成图片: prompt={prompt!r}, aspect_ratio={aspect_ratio}, resolution={resolution}"
-        )
+        logger.info(f"{self.log_prefix} 开始生成图片: prompt={prompt!r}, aspect_ratio={aspect_ratio}, resolution={resolution}")
 
         try:
             client = BizyAirMcpClient(
                 bearer_token=token,
-                mcp_url=self._get_optional_string_config(
-                    "bizyair_generate_image_plugin.mcp_url",
-                    BizyAirMcpClient.MCP_URL,
-                ),
+                mcp_url=self._get_optional_string_config("bizyair_generate_image_plugin.mcp_url", BizyAirMcpClient.MCP_URL, ),
                 timeout=timeout,
             )
             image_bytes = await client.generate_and_download(
@@ -82,10 +76,7 @@ class GenerateImageAction(BaseAction):
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
         if self.get_config("bizyair_generate_image_plugin.send_text_before_image", False):
-            prefix_text = self._get_string_config(
-                "bizyair_generate_image_plugin.text_before_image",
-                "我给你生成了一张图片。",
-            )
+            prefix_text = self._get_string_config("bizyair_generate_image_plugin.text_before_image", "我给你生成了一张图片。", )
             if prefix_text:
                 await self.send_text(prefix_text, storage_message=True)
 
@@ -154,6 +145,4 @@ class GenerateImageAction(BaseAction):
         compact_prompt = prompt.replace("\n", " ").strip()
         if len(compact_prompt) > 80:
             compact_prompt = f"{compact_prompt[:77]}..."
-        return (
-            f"[图片生成: prompt={compact_prompt}; aspect_ratio={aspect_ratio}; resolution={resolution}]"
-        )
+        return f"[图片生成: prompt={compact_prompt}; aspect_ratio={aspect_ratio}; resolution={resolution}]"
