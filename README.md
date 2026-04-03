@@ -1,0 +1,1 @@
+# maibot-bizyair-generate-image-plugin
