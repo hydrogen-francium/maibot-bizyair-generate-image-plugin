@@ -31,7 +31,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
             "provider": ConfigField(
                 type=str,
                 choices=["mcp", "openapi"],
-                default="mcp",
+                default="openapi",
                 description="选择当前使用的 BizyAir 接口类型。mcp 为 Streamable MCP，openapi 为 HTTP OpenAPI。",
             ),
             "bearer_token": ConfigField(
