@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
 import random
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, List
 
 import httpx
 
+from src.common.logger import get_logger
 from .base import BizyAirBaseClient, BizyAirImageResult, BizyAirOpenApiOutput
+
+logger = get_logger("bizyair_generate_image_plugin")
 
 
 class BizyAirOpenApiError(Exception):
@@ -21,6 +25,7 @@ class BizyAirOpenApiProtocolError(BizyAirOpenApiError):
 class BizyAirOpenApiParameterBinding:
     field: str
     value_template: Any
+    value_type: str = "string"
 
 
 @dataclass
@@ -33,11 +38,13 @@ class BizyAirOpenApiResponse:
 
     @property
     def primary_image_url(self) -> str:
+        """返回主图片地址"""
         if not self.outputs:
             raise BizyAirOpenApiProtocolError("outputs 为空，无法获取图片 URL")
         return self.outputs[0].object_url
 
     def to_image_result(self) -> BizyAirImageResult:
+        """将响应对象转换为图片结果对象"""
         return BizyAirImageResult(image_url=self.primary_image_url)
 
 
@@ -49,16 +56,7 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
     DEFAULT_RANDOM_SEED_MIN = 0
     DEFAULT_RANDOM_SEED_MAX = 2147483647
 
-    PROMPT_KEY = "17:BizyAir_NanoBananaPro.prompt"
-    ASPECT_RATIO_KEY = "17:BizyAir_NanoBananaPro.aspect_ratio"
-    RESOLUTION_KEY = "17:BizyAir_NanoBananaPro.resolution"
     SEED_PLACEHOLDER = "{random_seed}"
-    PROMPT_PLACEHOLDER = "{prompt}"
-    ASPECT_RATIO_PLACEHOLDER = "{aspect_ratio}"
-    RESOLUTION_PLACEHOLDER = "{resolution}"
-
-    ALLOWED_ASPECT_RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "auto"}
-    ALLOWED_RESOLUTIONS = {"1K", "2K", "4K", "auto"}
     SUCCESS_STATUS = "Success"
 
     def __init__(
@@ -69,23 +67,17 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
             timeout: float = 180.0,
             parameter_bindings: list[BizyAirOpenApiParameterBinding] | None = None,
     ) -> None:
+        """初始化 OpenAPI 客户端配置"""
         super().__init__(bearer_token=bearer_token, timeout=timeout)
         self.api_url = api_url or self.API_URL
         self.web_app_id = int(web_app_id)
-        self.parameter_bindings = parameter_bindings or self.default_parameter_bindings()
-
-    @classmethod
-    def default_parameter_bindings(cls) -> list[BizyAirOpenApiParameterBinding]:
-        return [
-            BizyAirOpenApiParameterBinding(field=cls.PROMPT_KEY, value_template=cls.PROMPT_PLACEHOLDER),
-            BizyAirOpenApiParameterBinding(field=cls.ASPECT_RATIO_KEY, value_template=cls.ASPECT_RATIO_PLACEHOLDER),
-            BizyAirOpenApiParameterBinding(field=cls.RESOLUTION_KEY, value_template=cls.RESOLUTION_PLACEHOLDER),
-        ]
+        self.parameter_bindings: List[BizyAirOpenApiParameterBinding] = parameter_bindings or []
 
     @classmethod
     def parse_parameter_bindings(cls, raw_bindings: Any) -> list[BizyAirOpenApiParameterBinding]:
+        """解析并校验参数映射配置"""
         if raw_bindings is None:
-            return cls.default_parameter_bindings()
+            return []
         if not isinstance(raw_bindings, list) or not raw_bindings:
             raise ValueError("openapi_parameter_mappings 必须是非空列表")
 
@@ -97,47 +89,66 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
             field = cls._require_mapping_text(item.get("field"), f"openapi_parameter_mappings[{index}].field")
             if "value" not in item:
                 raise ValueError(f"openapi_parameter_mappings[{index}].value 缺失")
+            value_type = cls._parse_value_type(item.get("value_type", "string"), f"openapi_parameter_mappings[{index}].value_type")
+            value_template = cls._coerce_mapping_value(item.get("value"), value_type, f"openapi_parameter_mappings[{index}].value")
 
-            bindings.append(BizyAirOpenApiParameterBinding(field=field, value_template=item.get("value")))
+            bindings.append(BizyAirOpenApiParameterBinding(field=field, value_template=value_template, value_type=value_type))
         return bindings
 
-    def _validate_aspect_ratio(self, aspect_ratio: str) -> None:
-        self._validate_choice(aspect_ratio, self.ALLOWED_ASPECT_RATIOS, "aspect_ratio")
-
-    def _validate_resolution(self, resolution: str) -> None:
-        self._validate_choice(resolution, self.ALLOWED_RESOLUTIONS, "resolution")
-
-    def _build_request_payload(self, prompt: str, aspect_ratio: str, resolution: str, suppress_preview_output: bool = False) -> dict[str, Any]:
+    def _build_request_payload(self, template_context: dict[str, Any], suppress_preview_output: bool = False) -> dict[str, Any]:
+        """构造创建任务请求体"""
         return {
             "web_app_id": self.web_app_id,
             "suppress_preview_output": suppress_preview_output,
-            "input_values": self._build_input_values(
-                prompt=prompt,
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
-            ),
+            "input_values": self._build_input_values(template_context),
         }
 
-    def _build_input_values(self, prompt: str, aspect_ratio: str, resolution: str) -> dict[str, Any]:
-        placeholder_values = self._build_placeholder_values(
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
-        )
+    def _build_input_values(self, template_context: dict[str, Any]) -> dict[str, Any]:
+        """根据映射规则构造 input_values"""
+        placeholder_values = self._build_placeholder_values(template_context)
         input_values: dict[str, Any] = {}
         for binding in self.parameter_bindings:
             input_values[binding.field] = self._resolve_template_value(binding.value_template, placeholder_values)
         return input_values
 
-    def _build_placeholder_values(self, prompt: str, aspect_ratio: str, resolution: str) -> dict[str, Any]:
-        return {
-            self.PROMPT_PLACEHOLDER: prompt,
-            self.ASPECT_RATIO_PLACEHOLDER: aspect_ratio,
-            self.RESOLUTION_PLACEHOLDER: resolution,
+    def _build_placeholder_values(self, template_context: dict[str, Any]) -> dict[str, Any]:
+        """构造占位符到实际值的映射表"""
+        placeholder_values = {
             self.SEED_PLACEHOLDER: self._generate_random_seed(),
         }
+        for key, value in template_context.items():
+            placeholder_values[f"{{{key}}}"] = value
+        return placeholder_values
+
+    @classmethod
+    def resolve_template_value_static(cls, value_template: Any, template_context: dict[str, Any]) -> Any:
+        """基于模板上下文静态解析模板值"""
+        placeholder_values = {f"{{{key}}}": value for key, value in template_context.items()}
+        return cls._resolve_template_value_static(value_template, placeholder_values)
+
+    @classmethod
+    def _resolve_template_value_static(cls, value_template: Any, placeholder_values: dict[str, Any]) -> Any:
+        """静态递归解析模板值中的占位符"""
+        if isinstance(value_template, str):
+            stripped = value_template.strip()
+            if stripped in placeholder_values:
+                return placeholder_values[stripped]
+
+            resolved = value_template
+            for placeholder, value in placeholder_values.items():
+                resolved = resolved.replace(placeholder, str(value))
+            return resolved
+
+        if isinstance(value_template, list):
+            return [cls._resolve_template_value_static(item, placeholder_values) for item in value_template]
+
+        if isinstance(value_template, dict):
+            return {key: cls._resolve_template_value_static(value, placeholder_values) for key, value in value_template.items()}
+
+        return value_template
 
     def _resolve_template_value(self, value_template: Any, placeholder_values: dict[str, Any]) -> Any:
+        """递归解析模板值中的占位符"""
         if isinstance(value_template, str):
             stripped = value_template.strip()
             if stripped in placeholder_values:
@@ -157,25 +168,51 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
         return value_template
 
     @classmethod
-    def placeholder_reference_text(cls) -> str:
-        return "\n".join([
-            "支持的占位符：",
-            f"- {cls.PROMPT_PLACEHOLDER}: 本次生成 prompt",
-            f"- {cls.ASPECT_RATIO_PLACEHOLDER}: 本次生成 aspect_ratio",
-            f"- {cls.RESOLUTION_PLACEHOLDER}: 本次生成 resolution",
-            f"- {cls.SEED_PLACEHOLDER}: 随机生成的 32 位非负整数种子",
-        ])
+    def _parse_value_type(cls, value: Any, field_name: str) -> str:
+        """解析并校验映射值类型"""
+        text = cls._require_mapping_text(value, field_name).lower()
+        allowed = {"string", "int", "boolean", "json"}
+        if text not in allowed:
+            raise ValueError(f"{field_name} 只能是 string、int、boolean、json 之一")
+        return text
 
     @classmethod
-    def default_parameter_mapping_config(cls) -> list[dict[str, Any]]:
-        return [
-            {"field": cls.PROMPT_KEY, "value": cls.PROMPT_PLACEHOLDER},
-            {"field": cls.ASPECT_RATIO_KEY, "value": cls.ASPECT_RATIO_PLACEHOLDER},
-            {"field": cls.RESOLUTION_KEY, "value": cls.RESOLUTION_PLACEHOLDER},
-        ]
+    def _coerce_mapping_value(cls, value: Any, value_type: str, field_name: str) -> Any:
+        """按声明类型强制转换映射值"""
+        if value_type == "string":
+            if value is None:
+                return ""
+            return str(value)
+
+        raw_text = "" if value is None else str(value).strip()
+
+        if value_type == "int":
+            try:
+                return int(raw_text)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{field_name} 不是合法整数: {value}") from exc
+
+        if value_type == "boolean":
+            normalized = raw_text.lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off"}:
+                return False
+            raise ValueError(f"{field_name} 不是合法布尔值: {value}")
+
+        if value_type == "json":
+            if not raw_text:
+                raise ValueError(f"{field_name} 不能为空")
+            try:
+                return json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{field_name} 不是合法 JSON: {value}") from exc
+
+        raise ValueError(f"{field_name} 的类型不支持: {value_type}")
 
     @classmethod
     def _require_mapping_text(cls, value: Any, field_name: str) -> str:
+        """校验映射字段文本非空"""
         text = "" if value is None else str(value).strip()
         if not text:
             raise ValueError(f"{field_name} 不能为空")
@@ -183,41 +220,44 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
     @classmethod
     def _generate_random_seed(cls) -> int:
+        """生成随机种子值"""
         return random.randint(cls.DEFAULT_RANDOM_SEED_MIN, cls.DEFAULT_RANDOM_SEED_MAX)
 
     async def generate_image(
             self,
-            prompt: str,
-            aspect_ratio: str = "1:1",
-            resolution: str = "1K",
+            action_inputs: dict[str, Any],
+            template_context: dict[str, Any] | None = None,
             suppress_preview_output: bool = False,
     ) -> BizyAirImageResult:
+        """创建任务并转换为图片结果"""
         response = await self.create_task(
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
+            action_inputs=action_inputs,
+            template_context=template_context,
             suppress_preview_output=suppress_preview_output,
         )
         return response.to_image_result()
 
     async def create_task(
             self,
-            prompt: str,
-            aspect_ratio: str = "1:1",
-            resolution: str = "1K",
+            action_inputs: dict[str, Any],
+            template_context: dict[str, Any] | None = None,
             suppress_preview_output: bool = False,
     ) -> BizyAirOpenApiResponse:
-        prompt = self._require_non_empty_text(prompt, "prompt")
-        resolution = self._normalize_resolution(resolution)
-        self._validate_aspect_ratio(aspect_ratio)
-        self._validate_resolution(resolution)
+        """调用 OpenAPI 创建生成任务"""
+        if not isinstance(action_inputs, dict) or not action_inputs:
+            raise ValueError("action_inputs 必须是非空对象")
+
+        if template_context is None:
+            template_context = action_inputs
+        if not isinstance(template_context, dict) or not template_context:
+            raise ValueError("template_context 必须是非空对象")
 
         payload = self._build_request_payload(
-            prompt=prompt,
-            aspect_ratio=aspect_ratio,
-            resolution=resolution,
+            template_context=template_context,
             suppress_preview_output=suppress_preview_output,
         )
+
+        logger.info(f"准备调用 OpenAPI 。请求体:{payload}")
 
         headers = self._build_headers()
         headers["Content-Type"] = "application/json"
@@ -230,6 +270,7 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
         return self._parse_response(data)
 
     def _parse_response(self, data: dict[str, Any]) -> BizyAirOpenApiResponse:
+        """解析并校验 OpenAPI 响应结构"""
         if not isinstance(data, dict):
             raise BizyAirOpenApiProtocolError(f"返回结果不是 JSON object: {type(data)}")
 
@@ -276,6 +317,7 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
+        """将可选整数字段转换为整数"""
         if value is None or value == "":
             return None
         try:
@@ -285,6 +327,7 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
     @staticmethod
     def _optional_text(value: Any) -> str | None:
+        """将可选文本字段转换为字符串"""
         if value is None:
             return None
         text = str(value).strip()
@@ -292,6 +335,7 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
     @staticmethod
     def _require_protocol_text(value: Any, field_name: str) -> str:
+        """校验协议字段文本非空"""
         text = "" if value is None else str(value).strip()
         if not text:
             raise BizyAirOpenApiProtocolError(f"{field_name} 为空")

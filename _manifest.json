@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "BizyAir 图片生成插件",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "为 MaiBot 添加一个文生图 action，调用 BizyAir 生成图片并发送到聊天会话。",
   "author": {
     "name": "鲨鱼",
@@ -15,7 +15,6 @@
   "repository_url": "https://github.com/HyperSharkawa/maibot-bizyair-generate-image-plugin",
   "keywords": [
     "image-generation",
-    "mcp",
     "bizyair",
     "action"
   ],
