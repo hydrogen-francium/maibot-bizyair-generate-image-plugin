@@ -15,6 +15,7 @@ from ..clients import (
 from ..services.custom_variable_resolver import CustomVariableResolver
 from ..services.openapi_input_value_builder import BizyAirOpenApiInputValueBuilder
 from ..services.action_parameter_utils import build_action_parameters
+from ..services import permission_manager
 
 logger = get_logger("bizyair_generate_image_plugin")
 
@@ -54,6 +55,11 @@ class GenerateImageAction(BaseAction):
     async def execute(self) -> Tuple[bool, str]:
         """执行生图流程并在失败时返回完整错误信息"""
         try:
+            user_id = str(self.user_id)
+            has_permission, deny_reason = permission_manager.check_action_permission(user_id)
+            if not has_permission:
+                return False, deny_reason or "当前用户没有使用该 action 的权限"
+
             action_inputs = self._collect_action_inputs()
             active_preset = str(self.active_preset).strip()
             app_id = self._resolve_active_app_id(active_preset)

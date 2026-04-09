@@ -10,6 +10,7 @@ from src.common.logger import get_logger
 from src.plugin_system import BaseCommand
 
 from .generate_image_action import GenerateImageAction
+from ..services import permission_manager
 
 logger = get_logger("bizyair_generate_image_plugin")
 
@@ -26,7 +27,12 @@ class DrListCommand(BaseCommand):
     command_pattern = r"^/dr\s+list$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
-        presets: list = self.get_config("bizyair_client.app_presets", [])
+        user_id = self.message.message_info.user_info.user_id
+        has_permission, deny_reason = permission_manager.check_command_permission(str(user_id))
+        if not has_permission:
+            return True, deny_reason, 1
+
+        presets = self.get_config("bizyair_client.app_presets", []) or []
         active: str = GenerateImageAction.active_preset
 
         if not presets:
@@ -54,12 +60,17 @@ class DrUseCommand(BaseCommand):
     command_pattern = r"^/dr\s+use\s+(?P<preset_name>\S+)$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
+        user_id = self.message.message_info.user_info.user_id
+        has_permission, deny_reason = permission_manager.check_command_permission(str(user_id))
+        if not has_permission:
+            return True, deny_reason, 1
+
         preset_name: str = self.matched_groups.get("preset_name", "").strip()
         if not preset_name:
             await self.send_text("用法：/dr use <预设名称>")
             return False, "缺少预设名称参数", 1
 
-        presets: list = self.get_config("bizyair_client.app_presets", [])
+        presets = self.get_config("bizyair_client.app_presets", []) or []
         available_names = [p.get("preset_name", "") for p in presets]
 
         if preset_name not in available_names:

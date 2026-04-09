@@ -6,7 +6,7 @@ from src.plugin_system.base.component_types import ActionInfo, CommandInfo, Even
 from src.plugin_system.base.config_types import ConfigLayout, ConfigTab
 from .components.dr_commands import DrListCommand, DrUseCommand
 from .components.generate_image_action import GenerateImageAction
-from .services import build_action_parameters
+from .services import build_action_parameters, permission_manager
 
 logger = get_logger("bizyair_generate_image_plugin")
 
@@ -51,6 +51,8 @@ DEFAULT_OPENAPI_PARAMETER_MAPPINGS = [
     {"preset_name": "default", "field": "18:BizyAir_NanoBananaProOfficial.resolution", "value_type": "string", "value": "{resolution}"},
 ]
 
+DEFAULT_PERMISSION_USER_LIST = []
+
 
 # ===== 插件注册 =====
 
@@ -67,6 +69,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
     config_section_descriptions = {
         "bizyair_client": "BizyAir 接口连接配置",
         "bizyair_generate_image_plugin": "BizyAir 文生图 Action 配置",
+        "permission_control": "权限管理配置",
         "custom_variables_config": "自定义变量配置",
         "variable_llm_config": "自定义变量 LLM 配置",
     }
@@ -89,18 +92,25 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 order=2,
             ),
             ConfigTab(
+                id="permission_control",
+                title="权限管理",
+                sections=["permission_control"],
+                icon="shield",
+                order=3,
+            ),
+            ConfigTab(
                 id="custom_variables",
                 title="自定义变量",
                 sections=["custom_variables_config"],
                 icon="variable",
-                order=3,
+                order=4,
             ),
             ConfigTab(
                 id="variable_llm",
                 title="变量 LLM",
                 sections=["variable_llm_config"],
                 icon="bot",
-                order=4,
+                order=5,
             ),
         ],
     )
@@ -242,6 +252,38 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                                           default="\n".join(GenerateImageAction.action_require),
                                           description="图片生成 action 的决策提示词，每行一条。"),
         },
+        "permission_control": {
+            "command_user_list_mode": ConfigField(
+                type=str,
+                choices=["whitelist", "blacklist"],
+                default="whitelist",
+                description="命令使用名单模式。whitelist 表示仅名单中的用户可用；blacklist 表示名单中的用户不可用。",
+            ),
+            "command_user_list": ConfigField(
+                type=list,
+                item_type="string",
+                default=DEFAULT_PERMISSION_USER_LIST,
+                description="命令使用名单。填写用户标识字符串列表。",
+            ),
+            "action_user_list_mode": ConfigField(
+                type=str,
+                choices=["whitelist", "blacklist"],
+                default="blacklist",
+                description="Action 使用名单模式。whitelist 表示仅名单中的用户可用；blacklist 表示名单中的用户不可用。",
+            ),
+            "action_user_list": ConfigField(
+                type=list,
+                item_type="string",
+                default=DEFAULT_PERMISSION_USER_LIST,
+                description="Action 使用名单。填写用户标识字符串列表。",
+            ),
+            "global_blacklist": ConfigField(
+                type=list,
+                item_type="string",
+                default=DEFAULT_PERMISSION_USER_LIST,
+                description="全局黑名单。名单中的用户不可使用该插件的任何命令和 action。",
+            ),
+        },
         "custom_variables_config": {
             "custom_variables": ConfigField(
                 type=list,
@@ -329,6 +371,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
             ]
         ] = []
         config = self.config.get("bizyair_generate_image_plugin", {})
+        permission_config = self.config.get("permission_control", {})
         if raw_action_require := config.get("action_require"):
             GenerateImageAction.action_require = [line.strip() for line in raw_action_require.split("\n") if line.strip()]
         action_parameters, required_action_parameters = build_action_parameters(
@@ -337,6 +380,13 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         GenerateImageAction.action_parameters = action_parameters
         GenerateImageAction.required_action_parameters = required_action_parameters
         GenerateImageAction.active_preset = str(self.config.get("bizyair_client", {}).get("active_preset", "default")).strip()
+        permission_manager.configure(
+            global_blacklist=permission_config.get("global_blacklist", DEFAULT_PERMISSION_USER_LIST),
+            command_user_list=permission_config.get("command_user_list", DEFAULT_PERMISSION_USER_LIST),
+            command_user_list_mode=permission_config.get("command_user_list_mode", "whitelist"),
+            action_user_list=permission_config.get("action_user_list", DEFAULT_PERMISSION_USER_LIST),
+            action_user_list_mode=permission_config.get("action_user_list_mode", "blacklist"),
+        )
         components.append((GenerateImageAction.get_action_info(), GenerateImageAction))
         components.append((DrListCommand.get_command_info(), DrListCommand))
         components.append((DrUseCommand.get_command_info(), DrUseCommand))
