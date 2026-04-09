@@ -12,10 +12,10 @@ from src.plugin_system.base.component_types import ActionActivationType
 from ..clients import (
     BizyAirOpenApiClient,
 )
+from ..services import permission_manager
+from ..services.builtin_variable_provider import BuiltinVariableProvider
 from ..services.custom_variable_resolver import CustomVariableResolver
 from ..services.openapi_input_value_builder import BizyAirOpenApiInputValueBuilder
-from ..services.action_parameter_utils import build_action_parameters
-from ..services import permission_manager
 
 logger = get_logger("bizyair_generate_image_plugin")
 
@@ -67,18 +67,25 @@ class GenerateImageAction(BaseAction):
             parameter_bindings_config = self._filter_parameter_bindings_by_preset(
                 all_parameter_bindings_config, active_preset
             )
-            builtin_placeholder_values = BizyAirOpenApiInputValueBuilder.build_builtin_placeholder_values()
+            builtin_variable_provider = BuiltinVariableProvider(
+                chat_id=self.chat_id,
+                filter_mai=False,
+            )
             custom_variable_resolver = CustomVariableResolver(
                 raw_variables=self.get_config("custom_variables_config.custom_variables", []),
                 action_inputs=action_inputs,
                 action_parameter_names=set(self.action_parameters.keys()),
                 llm_value_factory=self._generate_variable_with_llm,
-                builtin_placeholder_values=builtin_placeholder_values,
+                builtin_variable_provider=builtin_variable_provider,
             )
             required_variable_keys = custom_variable_resolver.collect_required_variable_keys(parameter_bindings_config)
             custom_variable_values = await custom_variable_resolver.resolve_required_variables(required_variable_keys)
             template_context = {**action_inputs, **custom_variable_values}
             parameter_bindings = BizyAirOpenApiInputValueBuilder.parse_parameter_bindings(parameter_bindings_config)
+            required_builtin_names = BizyAirOpenApiInputValueBuilder.collect_builtin_placeholder_names_from_bindings(
+                parameter_bindings_config
+            )
+            builtin_placeholder_values = builtin_variable_provider.build_placeholder_values(required_builtin_names)
             input_values = BizyAirOpenApiInputValueBuilder.build_input_values(
                 parameter_bindings=parameter_bindings,
                 template_context=template_context,

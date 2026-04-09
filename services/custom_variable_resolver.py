@@ -1,11 +1,11 @@
 import json
 import random
-import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from src.common.logger import get_logger
-from .openapi_input_value_builder import BizyAirOpenApiInputValueBuilder
+from .builtin_variable_provider import BuiltinVariableProvider
+from .template_placeholder_utils import TemplatePlaceholderUtils
 
 logger = get_logger("bizyair_generate_image_plugin")
 
@@ -22,25 +22,37 @@ class CustomVariableDefinition:
 class CustomVariableResolver:
     """按需解析自定义变量"""
 
-    PLACEHOLDER_PATTERN = re.compile(r"\{([^{}]+)\}")
-
     def __init__(
             self,
             raw_variables: Any,
             action_inputs: dict[str, Any],
             action_parameter_names: set[str],
             llm_value_factory: Callable[[str], Awaitable[str]],
-            builtin_placeholder_values: dict[str, Any] | None = None,
+            builtin_variable_provider: BuiltinVariableProvider | None = None,
     ) -> None:
-        """初始化变量解析器并预解析变量定义"""
+        """
+        初始化自定义变量解析器并预解析变量定义
+
+        :param raw_variables: Any，原始 custom_variables 配置
+        :param action_inputs: dict[str, Any]，当前 action 已收集到的输入参数值
+        :param action_parameter_names: set[str]，action 支持的参数名集合
+        :param llm_value_factory: Callable[[str], Awaitable[str]]，用于生成 llm 模式变量值的异步函数
+        :param builtin_variable_provider: BuiltinVariableProvider | None，内置变量提供器，用于按需解析模板中的内置变量
+        :return: None，无返回值
+        """
         self.action_inputs = action_inputs
         self.action_parameter_names = set(action_parameter_names)
         self.llm_value_factory = llm_value_factory
-        self.builtin_placeholder_values = dict(builtin_placeholder_values or {})
+        self.builtin_variable_provider = builtin_variable_provider
         self.variable_definitions = self._parse_variable_definitions(raw_variables)
 
     def collect_required_variable_keys(self, raw_bindings: Any) -> set[str]:
-        """从参数映射配置中提取本次真正需要解析的变量名"""
+        """
+        从参数映射配置中提取本次真正会使用到的自定义变量名
+
+        :param raw_bindings: Any，原始 openapi_parameter_mappings 配置
+        :return: set[str]，本次需要解析的自定义变量键名集合
+        """
         if raw_bindings is None:
             return set()
         if not isinstance(raw_bindings, list) or not raw_bindings:
@@ -52,12 +64,23 @@ class CustomVariableResolver:
                 raise ValueError(f"openapi_parameter_mappings[{index}] 必须是对象")
             if "value" not in item:
                 raise ValueError(f"openapi_parameter_mappings[{index}].value 缺失")
-            required_keys.update(self._extract_variable_placeholders(item.get("value")))
+            required_keys.update(
+                TemplatePlaceholderUtils.collect_custom_placeholder_names(
+                    item.get("value"),
+                    action_parameter_names=self.action_parameter_names,
+                    builtin_names=BuiltinVariableProvider.get_default_variable_names(),
+                )
+            )
 
         return required_keys
 
     async def resolve_required_variables(self, required_keys: set[str]) -> dict[str, Any]:
-        """仅解析本次实际被引用到的变量"""
+        """
+        按需解析指定的自定义变量
+
+        :param required_keys: set[str]，本次需要解析的自定义变量键名集合
+        :return: dict[str, Any]，自定义变量名到最终解析结果的映射
+        """
         if not required_keys:
             return {}
 
@@ -70,7 +93,12 @@ class CustomVariableResolver:
         return resolved
 
     def _parse_variable_definitions(self, raw_variables: Any) -> dict[str, CustomVariableDefinition]:
-        """解析并校验自定义变量配置"""
+        """
+        解析并校验自定义变量配置列表
+
+        :param raw_variables: Any，原始 custom_variables 配置
+        :return: dict[str, CustomVariableDefinition]，变量键名到变量定义对象的映射
+        """
         if raw_variables is None:
             return {}
         if not isinstance(raw_variables, list):
@@ -79,7 +107,7 @@ class CustomVariableResolver:
             return {}
 
         definitions: dict[str, CustomVariableDefinition] = {}
-        reserved_names = self.action_parameter_names | BizyAirOpenApiInputValueBuilder.BUILTIN_PLACEHOLDER_NAMES
+        reserved_names = self.action_parameter_names | BuiltinVariableProvider.get_default_variable_names()
         for index, item in enumerate(raw_variables):
             if not isinstance(item, dict):
                 raise ValueError(f"custom_variables[{index}] 必须是对象")
@@ -110,17 +138,32 @@ class CustomVariableResolver:
         return definitions
 
     async def _resolve_single_variable(self, definition: CustomVariableDefinition) -> str:
-        """解析单个变量定义"""
+        """
+        解析单个自定义变量定义并返回最终文本值
+
+        :param definition: CustomVariableDefinition，待解析的自定义变量定义对象
+        :return: str，自定义变量最终生成的文本结果
+        """
         if random.random() > definition.probability:
             return ""
 
         selected_value = ""
         if definition.values:
+            builtin_placeholder_values = {}
+            if self.builtin_variable_provider is not None:
+                required_builtin_names = TemplatePlaceholderUtils.collect_builtin_placeholder_names(
+                    definition.values,
+                    BuiltinVariableProvider.get_default_variable_names(),
+                )
+                builtin_placeholder_values = self.builtin_variable_provider.build_placeholder_values(required_builtin_names)
+            placeholder_values = dict(builtin_placeholder_values)
+            for key, value in self.action_inputs.items():
+                placeholder_values[f"{{{key}}}"] = value
+
             selected_value = str(
-                BizyAirOpenApiInputValueBuilder.resolve_template_value_static(
+                self._resolve_value_template_static(
                     random.choice(definition.values),
-                    self.action_inputs,
-                    builtin_placeholder_values=self.builtin_placeholder_values,
+                    placeholder_values,
                 )
             ).strip()
 
@@ -131,33 +174,44 @@ class CustomVariableResolver:
             return ""
         return await self.llm_value_factory(selected_value)
 
-    def _extract_variable_placeholders(self, value: Any) -> set[str]:
-        """从模板值中提取自定义变量占位符"""
-        placeholder_names = self._extract_all_placeholders(value)
-        return {
-            name for name in placeholder_names
-            if name not in self.action_parameter_names and name not in BizyAirOpenApiInputValueBuilder.BUILTIN_PLACEHOLDER_NAMES
-        }
+    def _resolve_value_template_static(self, value_template: Any, placeholder_values: dict[str, Any]) -> Any:
+        """
+        递归解析自定义变量候选模板中的占位符
 
-    def _extract_all_placeholders(self, value: Any) -> set[str]:
-        """递归提取模板中的全部占位符名"""
-        if isinstance(value, str):
-            return {match.group(1).strip() for match in self.PLACEHOLDER_PATTERN.finditer(value) if match.group(1).strip()}
-        if isinstance(value, list):
-            result: set[str] = set()
-            for item in value:
-                result.update(self._extract_all_placeholders(item))
-            return result
-        if isinstance(value, dict):
-            result: set[str] = set()
-            for item in value.values():
-                result.update(self._extract_all_placeholders(item))
-            return result
-        return set()
+        :param value_template: Any，待解析的模板值，可以是字符串、列表、字典或其他类型
+        :param placeholder_values: dict[str, Any]，占位符到实际值的映射表
+        :return: Any，完成占位符替换后的模板结果
+        """
+        if isinstance(value_template, str):
+            stripped = value_template.strip()
+            if stripped in placeholder_values:
+                return placeholder_values[stripped]
+
+            resolved = value_template
+            for placeholder, value in placeholder_values.items():
+                resolved = resolved.replace(placeholder, str(value))
+            return resolved
+
+        if isinstance(value_template, list):
+            return [self._resolve_value_template_static(item, placeholder_values) for item in value_template]
+
+        if isinstance(value_template, dict):
+            return {
+                key: self._resolve_value_template_static(value, placeholder_values)
+                for key, value in value_template.items()
+            }
+
+        return value_template
 
     @staticmethod
     def _parse_variable_values(value: Any, field_name: str) -> list[str]:
-        """将变量配置值整理为候选字符串列表并兼容 JSON 列表字符串"""
+        """
+        将变量配置值整理为候选字符串列表，并兼容 JSON 列表字符串
+
+        :param value: Any，原始变量候选值配置
+        :param field_name: str，当前字段名，用于拼接报错信息
+        :return: list[str]，清洗后的候选字符串列表
+        """
         if value is None:
             return []
         if isinstance(value, list):
@@ -181,7 +235,13 @@ class CustomVariableResolver:
 
     @staticmethod
     def _require_text(value: Any, field_name: str) -> str:
-        """校验文本字段非空"""
+        """
+        校验文本字段非空并返回去空白结果
+
+        :param value: Any，原始字段值
+        :param field_name: str，当前字段名，用于拼接报错信息
+        :return: str，去除首尾空白后的非空文本
+        """
         text = "" if value is None else str(value).strip()
         if not text:
             raise ValueError(f"{field_name} 不能为空")

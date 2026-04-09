@@ -1,29 +1,33 @@
 from __future__ import annotations
 
 import json
-import random
-import re
 from typing import Any
 
 from ..clients import BizyAirOpenApiParameterBinding
+from .builtin_variable_provider import BuiltinVariableProvider
+from .template_placeholder_utils import TemplatePlaceholderUtils
 
+VALID_VALUE_TYPES = {"string", "int", "boolean", "json"}
 
 class BizyAirOpenApiInputValueBuilder:
     """负责将 action/context/config 组装为 OpenAPI input_values"""
 
-    PLACEHOLDER_PATTERN = re.compile(r"\{([^{}]+)\}")
-    DEFAULT_RANDOM_SEED_MIN = 0
-    DEFAULT_RANDOM_SEED_MAX = 2147483647
-    SEED_PLACEHOLDER = "{random_seed}"
-    BUILTIN_PLACEHOLDER_NAMES = frozenset({"random_seed"})
+    BUILTIN_PLACEHOLDER_NAMES = BuiltinVariableProvider.get_default_variable_names()
 
     @classmethod
     def parse_parameter_bindings(cls, raw_bindings: Any) -> list[BizyAirOpenApiParameterBinding]:
-        """解析并校验参数映射配置"""
+        """
+        解析并校验 OpenAPI 参数映射配置
+
+        :param raw_bindings: Any，原始 openapi_parameter_mappings 配置
+        :return: list[BizyAirOpenApiParameterBinding]，转换后的参数映射定义列表
+        """
         if raw_bindings is None:
             return []
         if not isinstance(raw_bindings, list) or not raw_bindings:
             raise ValueError("openapi_parameter_mappings 必须是非空列表")
+
+        
 
         bindings: list[BizyAirOpenApiParameterBinding] = []
         for index, item in enumerate(raw_bindings):
@@ -34,7 +38,10 @@ class BizyAirOpenApiInputValueBuilder:
             if "value" not in item:
                 raise ValueError(f"openapi_parameter_mappings[{index}].value 缺失")
             value_type = cls._require_mapping_text(item.get("value_type", "string"), f"openapi_parameter_mappings[{index}].value_type").lower()
-            value_template = cls._coerce_mapping_value(item.get("value"), value_type, f"openapi_parameter_mappings[{index}].value")
+            if value_type not in VALID_VALUE_TYPES:
+                raise ValueError(f"openapi_parameter_mappings[{index}].value_type 不支持: {value_type}")
+            raw_value = item.get("value")
+            value_template = "" if raw_value is None else str(raw_value)
             send_if_empty = bool(item.get("send_if_empty", False))
 
             bindings.append(BizyAirOpenApiParameterBinding(
@@ -55,7 +62,17 @@ class BizyAirOpenApiInputValueBuilder:
             required_action_parameters: set[str],
             builtin_placeholder_values: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """根据映射规则构造 input_values"""
+        """
+        根据映射配置和上下文构造 OpenAPI 的 input_values
+
+        :param parameter_bindings: list[BizyAirOpenApiParameterBinding]，已解析的参数映射定义列表
+        :param template_context: dict[str, Any]，模板上下文变量映射
+        :param action_inputs: dict[str, Any]，当前 action 输入参数值映射
+        :param action_parameter_names: set[str]，action 支持的参数名集合
+        :param required_action_parameters: set[str]，action 中声明为必填的参数名集合
+        :param builtin_placeholder_values: dict[str, Any] | None，已构造好的内置变量占位符值映射
+        :return: dict[str, Any]，最终要发送给 OpenAPI 的 input_values 字典
+        """
         if not isinstance(template_context, dict) or not template_context:
             raise ValueError("template_context 必须是非空对象")
 
@@ -64,7 +81,7 @@ class BizyAirOpenApiInputValueBuilder:
             builtin_placeholder_values=builtin_placeholder_values,
         )
         input_values: dict[str, Any] = {}
-        for binding in parameter_bindings:
+        for index, binding in enumerate(parameter_bindings):
             resolved_value = cls._resolve_template_value(
                 binding.value_template,
                 placeholder_values,
@@ -74,6 +91,11 @@ class BizyAirOpenApiInputValueBuilder:
             )
             if not binding.send_if_empty and cls._is_empty_mapping_value(resolved_value):
                 continue
+            # 占位符替换完成后，按 value_type 做类型转换
+            resolved_value = cls._coerce_mapping_value(
+                resolved_value, binding.value_type,
+                f"openapi_parameter_mappings[{index}].value",
+            )
             input_values[binding.field] = resolved_value
         return input_values
 
@@ -84,7 +106,14 @@ class BizyAirOpenApiInputValueBuilder:
             template_context: dict[str, Any],
             builtin_placeholder_values: dict[str, Any] | None = None,
     ) -> Any:
-        """基于模板上下文静态解析模板值"""
+        """
+        基于模板上下文静态解析模板值，不处理 action 参数缺失规则
+
+        :param value_template: Any，待解析的模板值
+        :param template_context: dict[str, Any]，模板上下文变量映射
+        :param builtin_placeholder_values: dict[str, Any] | None，内置变量占位符值映射
+        :return: Any，完成占位符替换后的模板结果
+        """
         placeholder_values = cls._build_placeholder_values(
             template_context,
             builtin_placeholder_values=builtin_placeholder_values,
@@ -92,27 +121,59 @@ class BizyAirOpenApiInputValueBuilder:
         return cls._resolve_template_value_static(value_template, placeholder_values)
 
     @classmethod
-    def build_builtin_placeholder_values(cls) -> dict[str, Any]:
-        """构造当前执行周期可复用的内置变量值"""
-        return {
-            cls.SEED_PLACEHOLDER: cls._generate_random_seed(),
-        }
-
-    @classmethod
     def _build_placeholder_values(
             cls,
             template_context: dict[str, Any],
             builtin_placeholder_values: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """构造占位符到实际值的映射表"""
-        placeholder_values = dict(builtin_placeholder_values or cls.build_builtin_placeholder_values())
+        """
+        构造模板解析时使用的占位符映射表
+
+        :param template_context: dict[str, Any]，模板上下文变量映射
+        :param builtin_placeholder_values: dict[str, Any] | None，内置变量占位符值映射
+        :return: dict[str, Any]，完整的占位符到实际值映射表
+        """
+        placeholder_values = dict(builtin_placeholder_values or {})
         for key, value in template_context.items():
             placeholder_values[f"{{{key}}}"] = value
         return placeholder_values
 
     @classmethod
+    def collect_builtin_placeholder_names_from_bindings(cls, raw_bindings: Any) -> set[str]:
+        """
+        从参数映射配置中提取被引用到的内置变量名
+
+        :param raw_bindings: Any，原始 openapi_parameter_mappings 配置
+        :return: set[str]，本次需要构造的内置变量名称集合
+        """
+        if raw_bindings is None:
+            return set()
+        if not isinstance(raw_bindings, list) or not raw_bindings:
+            raise ValueError("openapi_parameter_mappings 必须是非空列表")
+
+        required_names: set[str] = set()
+        for index, item in enumerate(raw_bindings):
+            if not isinstance(item, dict):
+                raise ValueError(f"openapi_parameter_mappings[{index}] 必须是对象")
+            if "value" not in item:
+                raise ValueError(f"openapi_parameter_mappings[{index}].value 缺失")
+            required_names.update(
+                TemplatePlaceholderUtils.collect_builtin_placeholder_names(
+                    item.get("value"),
+                    cls.BUILTIN_PLACEHOLDER_NAMES,
+                )
+            )
+        return required_names
+
+    @classmethod
     def _resolve_template_value_static(cls, value_template: Any, placeholder_values: dict[str, Any]) -> Any:
-        """静态递归解析模板值中的占位符"""
+        """
+        静态递归解析模板值中的占位符
+
+        :param value_template: Any，待解析的模板值
+        :param placeholder_values: dict[str, Any]，占位符到实际值的映射表
+        :return: Any，完成占位符替换后的模板结果
+        """
         if isinstance(value_template, str):
             stripped = value_template.strip()
             if stripped in placeholder_values:
@@ -140,7 +201,16 @@ class BizyAirOpenApiInputValueBuilder:
             action_parameter_names: set[str],
             required_action_parameters: set[str],
     ) -> Any:
-        """递归解析模板值中的占位符"""
+        """
+        递归解析模板值中的占位符，并处理 action 参数缺失规则
+
+        :param value_template: Any，待解析的模板值
+        :param placeholder_values: dict[str, Any]，占位符到实际值的映射表
+        :param action_inputs: dict[str, Any]，当前 action 输入参数值映射
+        :param action_parameter_names: set[str]，action 支持的参数名集合
+        :param required_action_parameters: set[str]，action 中声明为必填的参数名集合
+        :return: Any，完成占位符替换后的模板结果
+        """
         if isinstance(value_template, str):
             stripped = value_template.strip()
             if stripped in placeholder_values:
@@ -190,9 +260,17 @@ class BizyAirOpenApiInputValueBuilder:
             action_parameter_names: set[str],
             required_action_parameters: set[str],
     ) -> str:
-        """处理替换后仍残留的占位符"""
+        """
+        处理替换完成后仍残留的占位符文本
+
+        :param resolved_text: str，已完成首轮替换的文本
+        :param action_inputs: dict[str, Any]，当前 action 输入参数值映射
+        :param action_parameter_names: set[str]，action 支持的参数名集合
+        :param required_action_parameters: set[str]，action 中声明为必填的参数名集合
+        :return: str，处理残留占位符后的最终文本
+        """
         result = resolved_text
-        for placeholder_name in cls._extract_placeholder_names(resolved_text):
+        for placeholder_name in TemplatePlaceholderUtils.extract_placeholder_names(resolved_text):
             if (
                     placeholder_name in action_parameter_names
                     and placeholder_name not in required_action_parameters
@@ -204,13 +282,13 @@ class BizyAirOpenApiInputValueBuilder:
         return result
 
     @classmethod
-    def _extract_placeholder_names(cls, value: str) -> list[str]:
-        """提取字符串中的占位符名称"""
-        return [match.group(1).strip() for match in cls.PLACEHOLDER_PATTERN.finditer(value) if match.group(1).strip()]
-
-    @classmethod
     def _is_empty_mapping_value(cls, value: Any) -> bool:
-        """判断映射结果是否为空值"""
+        """
+        判断映射结果是否应被视为空值
+
+        :param value: Any，待判断的映射结果值
+        :return: bool，结果是否为空
+        """
         if value is None:
             return True
         if isinstance(value, str):
@@ -221,7 +299,14 @@ class BizyAirOpenApiInputValueBuilder:
 
     @classmethod
     def _coerce_mapping_value(cls, value: Any, value_type: str, field_name: str) -> Any:
-        """按声明类型强制转换映射值"""
+        """
+        按声明的 value_type 强制转换映射值
+
+        :param value: Any，原始映射值
+        :param value_type: str，声明的目标类型
+        :param field_name: str，当前字段名，用于拼接报错信息
+        :return: Any，按目标类型转换后的值
+        """
         if value_type == "string":
             if value is None:
                 return ""
@@ -255,13 +340,14 @@ class BizyAirOpenApiInputValueBuilder:
 
     @classmethod
     def _require_mapping_text(cls, value: Any, field_name: str) -> str:
-        """校验映射字段文本非空"""
+        """
+        校验映射字段文本非空并返回规范化结果
+
+        :param value: Any，原始字段值
+        :param field_name: str，当前字段名，用于拼接报错信息
+        :return: str，去除首尾空白后的非空文本
+        """
         text = "" if value is None else str(value).strip()
         if not text:
             raise ValueError(f"{field_name} 不能为空")
         return text
-
-    @classmethod
-    def _generate_random_seed(cls) -> int:
-        """生成随机种子值"""
-        return random.randint(cls.DEFAULT_RANDOM_SEED_MIN, cls.DEFAULT_RANDOM_SEED_MAX)

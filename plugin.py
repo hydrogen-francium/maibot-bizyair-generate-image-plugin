@@ -37,6 +37,13 @@ DEFAULT_CUSTOM_VARIABLES = [
     }
 ]
 
+BUILTIN_VARIABLE_DESCRIPTIONS = [
+    "{random_seed}：一个随机的 32 位整数",
+    "{recent_chat_context_10}：当前聊天最近 10 条聊天记录的可读文本。",
+    "{recent_chat_context_30}：当前聊天最近 30 条聊天记录的可读文本",
+    "{recent_chat_context_50}：当前聊天最近 50 条聊天记录的可读文本",
+]
+
 DEFAULT_APP_PRESETS = [
     {
         "preset_name": "default",
@@ -196,9 +203,10 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 description=(
                     "OpenAPI input_values 参数映射表。每一项必须包含 preset_name、field、value_type、value。"
                     " preset_name 不可为空，可填多个预设名（英文逗号分隔），运行时只加载与 active_preset 匹配的条目。"
-                    " 支持引用 action_parameters、自定义变量以及内置变量占位符（当前包含 {random_seed}）。"
+                    " 支持引用 action_parameters、自定义变量以及内置变量占位符。"
                     " value 会按 value_type 强制转换为 string、int、boolean 或反序列化为 json。"
                     " 当解析结果为空字符串、null、空数组或空对象时，默认跳过该参数；可通过 send_if_empty 控制是否仍然传参。"
+                    f" 当前内置变量包括：{' '.join(BUILTIN_VARIABLE_DESCRIPTIONS)}"
                 ),
             ),
         },
@@ -303,7 +311,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                     "values": {
                         "type": "string",
                         "label": "候选值列表",
-                        "placeholder": '例如 ["二次元插画", "seed={random_seed}", "高细节"] ，支持引用 action_inputs 中的 {参数名} 和内置变量',
+                        "placeholder": '例如 ["二次元插画", "seed={random_seed}", "参考上下文：{recent_chat_context_10}"] ，支持引用 action_inputs 中的 {参数名} 和内置变量',
                     },
                     "probability": {
                         "type": "float",
@@ -312,7 +320,11 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                     },
                 },
                 default=DEFAULT_CUSTOM_VARIABLES,
-                description="自定义变量列表。支持 literal 和 llm 两种模式。两种模式都会先从 values 中随机抽一条，如果是 llm 模式则会调用 llm 生成变量值。支持引用 action_inputs 中的 {参数名} 和内置变量占位符（当前包含 {random_seed}），不允许变量之间互相引用。",
+                description=(
+                    "自定义变量列表。支持 literal 和 llm 两种模式。两种模式都会先从 values 中随机抽一条，如果是 llm 模式则会调用 llm 生成变量值。"
+                    "支持引用 action_inputs 中的 {参数名} 和内置变量占位符，不允许变量之间互相引用。"
+                    f" 当前内置变量包括：{' '.join(BUILTIN_VARIABLE_DESCRIPTIONS)}"
+                ),
             ),
         },
         "variable_llm_config": {
