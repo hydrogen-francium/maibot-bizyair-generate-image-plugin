@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from services.custom_variable_resolver import CustomVariableDefinition
+from services.custom_variable_registry import CustomVariableDefinition
 from services.variable_dependency_resolver import VariableDependencyResolver
 from services.builtin_variable_provider import BuiltinVariableProvider
 

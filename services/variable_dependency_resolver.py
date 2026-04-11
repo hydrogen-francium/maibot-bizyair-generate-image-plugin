@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from src.common.logger import get_logger
 from .builtin_variable_provider import BuiltinVariableProvider
-from .custom_variable_resolver import CustomVariableDefinition
+from .custom_variable_registry import CustomVariableDefinition
 from .log_utils import short_repr
 from .template_placeholder_utils import TemplatePlaceholderUtils
 

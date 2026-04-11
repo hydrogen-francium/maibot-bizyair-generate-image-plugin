@@ -14,7 +14,7 @@ from ..clients import (
 )
 from ..services import permission_manager
 from ..services.builtin_variable_provider import BuiltinVariableProvider
-from ..services.custom_variable_resolver import CustomVariableResolver
+from ..services.custom_variable_registry import CustomVariableRegistry
 from ..services.log_utils import short_repr
 from ..services.openapi_input_value_builder import BizyAirOpenApiInputValueBuilder
 from ..services.variable_dependency_resolver import VariableDependencyResolver
@@ -85,21 +85,18 @@ class GenerateImageAction(BaseAction):
                 chat_id=self.chat_id,
                 filter_mai=False,
             )
-            failure_stage = "build_custom_variable_resolver"
-            custom_variable_resolver = CustomVariableResolver(
+            failure_stage = "build_custom_variable_registry"
+            custom_variable_registry = CustomVariableRegistry(
                 raw_variables=self.get_config("custom_variables_config.custom_variables", []),
-                action_inputs=action_inputs,
                 action_parameter_names=set(self.action_parameters.keys()),
-                llm_value_factory=self._generate_variable_with_llm,
-                builtin_variable_provider=builtin_variable_provider,
             )
             failure_stage = "collect_required_variables"
-            direct_variable_keys = custom_variable_resolver.collect_required_variable_keys(parameter_bindings_config)
+            direct_variable_keys = custom_variable_registry.collect_required_variable_keys(parameter_bindings_config)
             builtin_names = BuiltinVariableProvider.get_default_variable_names()
             required_variable_keys = VariableDependencyResolver.compute_required_variable_keys(
                 direct_keys=direct_variable_keys,
                 action_inputs=action_inputs,
-                custom_variable_definitions=custom_variable_resolver.variable_definitions,
+                custom_variable_definitions=custom_variable_registry.variable_definitions,
                 action_parameter_names=set(self.action_parameters.keys()),
                 builtin_names=builtin_names,
             )
@@ -121,7 +118,7 @@ class GenerateImageAction(BaseAction):
             failure_stage = "build_dependency_resolver"
             dependency_resolver = VariableDependencyResolver(
                 action_inputs=action_inputs,
-                custom_variable_definitions=custom_variable_resolver.variable_definitions,
+                custom_variable_definitions=custom_variable_registry.variable_definitions,
                 action_parameter_names=set(self.action_parameters.keys()),
                 builtin_names=builtin_names,
                 required_custom_variable_keys=required_variable_keys,

@@ -1,13 +1,9 @@
 import json
-import random
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from src.common.logger import get_logger
 from .builtin_variable_provider import BuiltinVariableProvider
 from .template_placeholder_utils import TemplatePlaceholderUtils
-
-logger = get_logger("bizyair_generate_image_plugin")
 
 
 @dataclass(frozen=True)
@@ -19,31 +15,15 @@ class CustomVariableDefinition:
     index: int
 
 
-class CustomVariableResolver:
-    """按需解析自定义变量"""
+class CustomVariableRegistry:
+    """自定义变量定义注册表"""
 
     def __init__(
             self,
             raw_variables: Any,
-            action_inputs: dict[str, Any],
             action_parameter_names: set[str],
-            llm_value_factory: Callable[[str], Awaitable[str]],
-            builtin_variable_provider: BuiltinVariableProvider | None = None,
     ) -> None:
-        """
-        初始化自定义变量解析器并预解析变量定义
-
-        :param raw_variables: Any，原始 custom_variables 配置
-        :param action_inputs: dict[str, Any]，当前 action 已收集到的输入参数值
-        :param action_parameter_names: set[str]，action 支持的参数名集合
-        :param llm_value_factory: Callable[[str], Awaitable[str]]，用于生成 llm 模式变量值的异步函数
-        :param builtin_variable_provider: BuiltinVariableProvider | None，内置变量提供器，用于按需解析模板中的内置变量
-        :return: None，无返回值
-        """
-        self.action_inputs = action_inputs
         self.action_parameter_names = set(action_parameter_names)
-        self.llm_value_factory = llm_value_factory
-        self.builtin_variable_provider = builtin_variable_provider
         self.variable_definitions = self._parse_variable_definitions(raw_variables)
 
     def collect_required_variable_keys(self, raw_bindings: Any) -> set[str]:
@@ -73,24 +53,6 @@ class CustomVariableResolver:
             )
 
         return required_keys
-
-    async def resolve_required_variables(self, required_keys: set[str]) -> dict[str, Any]:
-        """
-        按需解析指定的自定义变量
-
-        :param required_keys: set[str]，本次需要解析的自定义变量键名集合
-        :return: dict[str, Any]，自定义变量名到最终解析结果的映射
-        """
-        if not required_keys:
-            return {}
-
-        resolved: dict[str, Any] = {}
-        for key in required_keys:
-            definition = self.variable_definitions.get(key)
-            if definition is None:
-                raise ValueError(f"模板中引用了未定义的自定义变量: {key}")
-            resolved[key] = await self._resolve_single_variable(definition)
-        return resolved
 
     def _parse_variable_definitions(self, raw_variables: Any) -> dict[str, CustomVariableDefinition]:
         """
@@ -136,72 +98,6 @@ class CustomVariableResolver:
             )
 
         return definitions
-
-    async def _resolve_single_variable(self, definition: CustomVariableDefinition) -> str:
-        """
-        解析单个自定义变量定义并返回最终文本值
-
-        :param definition: CustomVariableDefinition，待解析的自定义变量定义对象
-        :return: str，自定义变量最终生成的文本结果
-        """
-        if random.random() > definition.probability:
-            return ""
-
-        selected_value = ""
-        if definition.values:
-            builtin_placeholder_values = {}
-            if self.builtin_variable_provider is not None:
-                required_builtin_names = TemplatePlaceholderUtils.collect_builtin_placeholder_names(
-                    definition.values,
-                    BuiltinVariableProvider.get_default_variable_names(),
-                )
-                builtin_placeholder_values = self.builtin_variable_provider.build_placeholder_values(required_builtin_names)
-            placeholder_values = dict(builtin_placeholder_values)
-            for key, value in self.action_inputs.items():
-                placeholder_values[f"{{{key}}}"] = value
-
-            selected_value = str(
-                self._resolve_value_template_static(
-                    random.choice(definition.values),
-                    placeholder_values,
-                )
-            ).strip()
-
-        if definition.mode == "literal":
-            return selected_value
-
-        if not selected_value:
-            return ""
-        return await self.llm_value_factory(selected_value)
-
-    def _resolve_value_template_static(self, value_template: Any, placeholder_values: dict[str, Any]) -> Any:
-        """
-        递归解析自定义变量候选模板中的占位符
-
-        :param value_template: Any，待解析的模板值，可以是字符串、列表、字典或其他类型
-        :param placeholder_values: dict[str, Any]，占位符到实际值的映射表
-        :return: Any，完成占位符替换后的模板结果
-        """
-        if isinstance(value_template, str):
-            stripped = value_template.strip()
-            if stripped in placeholder_values:
-                return placeholder_values[stripped]
-
-            resolved = value_template
-            for placeholder, value in placeholder_values.items():
-                resolved = resolved.replace(placeholder, str(value))
-            return resolved
-
-        if isinstance(value_template, list):
-            return [self._resolve_value_template_static(item, placeholder_values) for item in value_template]
-
-        if isinstance(value_template, dict):
-            return {
-                key: self._resolve_value_template_static(value, placeholder_values)
-                for key, value in value_template.items()
-            }
-
-        return value_template
 
     @staticmethod
     def _parse_variable_values(value: Any, field_name: str) -> list[str]:
