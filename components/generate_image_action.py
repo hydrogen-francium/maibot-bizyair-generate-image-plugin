@@ -13,6 +13,7 @@ from ..clients import (
     BizyAirOpenApiClient,
 )
 from ..services import permission_manager
+from ..services.action_parameter_utils import ActionParameterDefinition
 from ..services.builtin_variable_provider import BuiltinVariableProvider
 from ..services.custom_variable_registry import CustomVariableRegistry
 from ..services.log_utils import short_repr
@@ -33,10 +34,22 @@ class GenerateImageAction(BaseAction):
     associated_types = ["image", "text"]
     active_preset = "default"
 
-    action_parameters = {
-        "prompt": "必填，用于生成图片的描述词",
-        "aspect_ratio": "可选，图片宽高比。若传入，则必须为 1:1、4:3、16:9、9:16、auto 中的一个。默认为 1:1",
-        "resolution": "可选，图片分辨率。若传入，则必须为 1K、2K、4K、auto 中的一个。默认为 1k",
+    action_parameters: dict[str, ActionParameterDefinition] = {
+        "prompt": ActionParameterDefinition(
+            name="prompt",
+            description="必填，用于生成图片的描述词",
+            required=True,
+        ),
+        "aspect_ratio": ActionParameterDefinition(
+            name="aspect_ratio",
+            description="可选，图片宽高比。若传入，则必须为 1:1、4:3、16:9、9:16、auto 中的一个。默认为 1:1",
+            required=False,
+        ),
+        "resolution": ActionParameterDefinition(
+            name="resolution",
+            description="可选，图片分辨率。若传入，则必须为 1K、2K、4K、auto 中的一个。默认为 1k",
+            required=False,
+        ),
     }
     required_action_parameters: set[str] = set()
 
@@ -141,6 +154,7 @@ class GenerateImageAction(BaseAction):
                 action_inputs=resolved_action_inputs,
                 action_parameter_names=set(self.action_parameters.keys()),
                 required_action_parameters=set(self.required_action_parameters),
+                action_parameter_definitions=self.action_parameters,
                 builtin_placeholder_values=builtin_placeholder_values,
             )
 
@@ -234,15 +248,20 @@ class GenerateImageAction(BaseAction):
         collected: dict[str, Any] = {}
         missing_required: list[str] = []
 
-        for name in self.action_parameters:
+        for name, definition in self.action_parameters.items():
             raw_value = self.action_data.get(name)
             normalized_value = raw_value
             if isinstance(normalized_value, str):
                 normalized_value = normalized_value.strip() or None
+
             if normalized_value is None:
-                if name in self.required_action_parameters:
+                if definition.required:
                     missing_required.append(name)
+                    continue
+                if definition.missing_behavior == "use_default":
+                    collected[name] = definition.default_value
                 continue
+
             collected[name] = normalized_value
 
         if missing_required:

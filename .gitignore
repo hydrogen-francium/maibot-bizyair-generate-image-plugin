@@ -1,3 +1,5 @@
 /src/
+/dashboard/
 /.idea/
+/.context/
 __pycache__/

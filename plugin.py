@@ -265,13 +265,24 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                     },
                     "required": {
                         "type": "select",
-                        "label": "是否必填",
+                        "label": "是否动作必填参数",
                         "choices": ["选填", "必填"],
                         "default": "选填",
                     },
+                    "missing_behavior": {
+                        "type": "select",
+                        "label": "选填参数缺失时的处理方式",
+                        "choices": ["keep_placeholder", "raise_error", "use_default"],
+                        "default": "keep_placeholder",
+                    },
+                    "default_value": {
+                        "type": "string",
+                        "label": "缺失时的默认值",
+                        "placeholder": "仅 missing_behavior=use_default 时生效，可为空字符串",
+                    },
                 },
                 default=DEFAULT_ACTION_PARAMETERS,
-                description="generate_image 动作允许决策传入的参数列表。",
+                description="generate_image 动作允许决策传入的参数列表。必填参数缺失时始终报错；选填参数缺失时再按 missing_behavior 处理。",
             ),
             "action_require": ConfigField(type=str,
                                           input_type="textarea",
@@ -323,13 +334,64 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                     "mode": {
                         "type": "select",
                         "label": "变量值模式",
-                        "choices": ["literal", "llm"],
+                        "choices": ["literal", "llm", "dict"],
                         "default": "literal",
+                    },
+                    "condition_type": {
+                        "type": "select",
+                        "label": "条件判断类型",
+                        "choices": ["fixed_true", "fixed_false", "length_gt", "length_lt", "contains", "not_contains", "equals", "not_equals", "regex_match",
+                                    "regex_not_match"],
+                        "default": "fixed_true",
+                    },
+                    "use_raw_condition_source": {
+                        "type": "boolean",
+                        "label": "条件来源使用原始值",
+                        "default": False,
+                        "description": "为 true 时，condition_source 直接取 action_input 原始值或已求值的自定义变量值，不触发依赖解析",
+                    },
+                    "use_raw_condition_value": {
+                        "type": "boolean",
+                        "label": "条件参数使用字面文本",
+                        "default": False,
+                        "description": "为 true 时，condition_value 作为字面文本参与条件判断，不做占位符替换，不触发依赖解析",
+                    },
+                    "condition_source": {
+                        "type": "string",
+                        "label": "条件来源变量名",
+                        "placeholder": "例如 prompt 或 aspect_ratio（不带花括号）",
+                    },
+                    "condition_value": {
+                        "type": "string",
+                        "label": "条件参数值",
+                        "placeholder": "比较值、子串或正则表达式",
                     },
                     "values": {
                         "type": "string",
-                        "label": "候选值列表",
-                        "placeholder": '例如 ["二次元插画", "seed={random_seed}", "{other_var} 补充内容"] ，支持引用 action_inputs 中的 {参数名}、内置变量和其他自定义变量',
+                        "label": "候选值列表 / 字典内容",
+                        "placeholder": 'literal/llm 可填 JSON 数组字符串；dict 可填 JSON 对象字符串',
+                    },
+
+                    "values_else": {
+                        "type": "string",
+                        "label": "条件为 false 时的候选值",
+                        "placeholder": '例如 ["默认值"]，格式与 values 相同',
+                    },
+                    "source": {
+                        "type": "string",
+                        "label": "字典 key 来源（仅 dict 模式）",
+                        "placeholder": "例如 emotion_composition（不带花括号）",
+                    },
+                    "missing_behavior": {
+                        "type": "select",
+                        "label": "key 未命中时的行为（仅 dict 模式）",
+                        "choices": ["keep_placeholder", "raise_error", "use_default"],
+                        "default": "keep_placeholder",
+                    },
+                    "fallback_value": {
+                        "type": "string",
+                        "label": "回退默认值（仅 dict 模式 + use_default）",
+                        "placeholder": "key 未命中时返回的默认值，可为空字符串",
                     },
                     "probability": {
                         "type": "float",
@@ -339,7 +401,8 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 },
                 default=DEFAULT_CUSTOM_VARIABLES,
                 description=(
-                    "自定义变量列表。支持 literal 和 llm 两种模式。两种模式都会先从 values 中随机抽一条，如果是 llm 模式则会调用 llm 生成变量值。"
+                    "自定义变量列表。literal 和 llm 模式会在 values/values_else 中选择模板；dict 模式会根据 source 从 JSON 对象中取值。"
+                    " literal/llm 支持 probability 与条件判断；dict 模式支持 key miss 行为控制。"
                     "支持引用 action_inputs 中的 {参数名}、内置变量占位符以及其他自定义变量的 {变量名}（禁止循环引用）。"
                     " 决策参数的值中同样支持引用自定义变量占位符，系统会按依赖顺序自动解析。"
                     f" 当前内置变量包括：{' '.join(BUILTIN_VARIABLE_DESCRIPTIONS)}"
@@ -356,7 +419,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
             "llm_list": ConfigField(
                 type=list,
                 item_type="string",
-                default=["gemini-3-flash","qwen3.6-plus","doubao-seed-2-0-pro"],
+                default=["gemini-3-flash", "qwen3.6-plus", "doubao-seed-2-0-pro"],
                 description="自定义变量生成时使用的模型名称列表。为空时使用 llm_group 对应任务配置。",
             ),
             "max_tokens": ConfigField(
@@ -405,11 +468,13 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         permission_config = self.config.get("permission_control", {})
         if raw_action_require := config.get("action_require"):
             GenerateImageAction.action_require = [line.strip() for line in raw_action_require.split("\n") if line.strip()]
-        action_parameters, required_action_parameters = build_action_parameters(
+        action_parameters = build_action_parameters(
             config.get("action_parameters", DEFAULT_ACTION_PARAMETERS)
         )
         GenerateImageAction.action_parameters = action_parameters
-        GenerateImageAction.required_action_parameters = required_action_parameters
+        GenerateImageAction.required_action_parameters = {
+            name for name, definition in action_parameters.items() if definition.required
+        }
         GenerateImageAction.active_preset = str(self.config.get("bizyair_client", {}).get("active_preset", "default")).strip()
         permission_manager.configure(
             global_blacklist=permission_config.get("global_blacklist", DEFAULT_PERMISSION_USER_LIST),

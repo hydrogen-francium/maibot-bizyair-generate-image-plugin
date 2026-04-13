@@ -1,9 +1,19 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .builtin_variable_provider import BuiltinVariableProvider
 from .template_placeholder_utils import TemplatePlaceholderUtils
+
+VALID_CONDITION_TYPES = {
+    "fixed_true", "fixed_false",
+    "length_gt", "length_lt",
+    "contains", "not_contains",
+    "equals", "not_equals",
+    "regex_match", "regex_not_match",
+}
+
+VALID_MISSING_BEHAVIORS = {"keep_placeholder", "raise_error", "use_default"}
 
 
 @dataclass(frozen=True)
@@ -13,6 +23,16 @@ class CustomVariableDefinition:
     values: list[str]
     probability: float
     index: int
+    condition_type: str | None = None
+    condition_source: str | None = None
+    condition_value: str | None = None
+    values_else: list[str] = field(default_factory=list)
+    source: str | None = None
+    entries: dict[str, str] = field(default_factory=dict)
+    missing_behavior: str = "keep_placeholder"
+    fallback_value: str = ""
+    use_raw_condition_source: bool = False
+    use_raw_condition_value: bool = False
 
 
 class CustomVariableRegistry:
@@ -81,20 +101,75 @@ class CustomVariableRegistry:
                 raise ValueError(f"custom_variables[{index}].key 重复: {key}")
 
             mode = self._require_text(item.get("mode", "literal"), f"custom_variables[{index}].mode").lower()
-            if mode not in {"literal", "llm"}:
-                raise ValueError(f"custom_variables[{index}].mode 只能是 literal 或 llm")
+            if mode not in {"literal", "llm", "dict"}:
+                raise ValueError(f"custom_variables[{index}].mode 只能是 literal、llm 或 dict")
 
             probability = float(str(item.get("probability", 1.0)).strip())
             if probability < 0 or probability > 1:
                 raise ValueError(f"custom_variables[{index}].probability 必须在 0 到 1 之间: {probability}")
 
-            values = self._parse_variable_values(item.get("values"), f"custom_variables[{index}].values")
+            # --- condition 字段 ---
+            condition_type = self._parse_optional_text(item.get("condition_type"))
+            condition_source: str | None = None
+            condition_value: str | None = None
+            if condition_type:
+                if condition_type not in VALID_CONDITION_TYPES:
+                    raise ValueError(f"custom_variables[{index}].condition_type 只能是 {', '.join(sorted(VALID_CONDITION_TYPES))}")
+                if condition_type not in {"fixed_true", "fixed_false"}:
+                    condition_source = self._require_text(item.get("condition_source"), f"custom_variables[{index}].condition_source", )
+                    condition_value = self._require_text(item.get("condition_value"), f"custom_variables[{index}].condition_value", )
+                else:
+                    condition_source = self._parse_optional_text(item.get("condition_source"))
+                    condition_value = self._parse_optional_text(item.get("condition_value"))
+
+            # --- values_else ---
+            values_else = self._parse_variable_values(item.get("values_else"), f"custom_variables[{index}].values_else")
+
+            # --- dict 模式特有字段 ---
+            source: str | None = None
+            entries: dict[str, str] = {}
+            missing_behavior = "keep_placeholder"
+            fallback_value = ""
+
+            if mode == "dict":
+                source = self._require_text(item.get("source"), f"custom_variables[{index}].source")
+                entries = self._parse_variable_values_as_dict(item.get("values"), f"custom_variables[{index}].values")
+                missing_behavior = str(item.get("missing_behavior", "keep_placeholder")).strip()
+                if missing_behavior not in VALID_MISSING_BEHAVIORS:
+                    raise ValueError(f"custom_variables[{index}].missing_behavior 只能是 "                        f"{', '.join(sorted(VALID_MISSING_BEHAVIORS))}")
+                fallback_value = "" if item.get("fallback_value") is None else str(item["fallback_value"]).strip()
+                values: list[str] = []
+            else:
+                values = self._parse_variable_values(item.get("values"), f"custom_variables[{index}].values")
+
+            # --- use_raw 标志位 ---
+            use_raw_condition_source = bool(item.get("use_raw_condition_source", False))
+            use_raw_condition_value = bool(item.get("use_raw_condition_value", False))
+            if use_raw_condition_source and not condition_source:
+                raise ValueError(
+                    f"custom_variables[{index}].use_raw_condition_source 为 true 时，condition_source 不能为空"
+                )
+            if use_raw_condition_value and not condition_value:
+                raise ValueError(
+                    f"custom_variables[{index}].use_raw_condition_value 为 true 时，condition_value 不能为空"
+                )
+
             definitions[key] = CustomVariableDefinition(
                 key=key,
                 mode=mode,
                 values=values,
                 probability=probability,
                 index=index,
+                condition_type=condition_type,
+                condition_source=condition_source,
+                condition_value=condition_value,
+                values_else=values_else,
+                source=source,
+                entries=entries,
+                missing_behavior=missing_behavior,
+                fallback_value=fallback_value,
+                use_raw_condition_source=use_raw_condition_source,
+                use_raw_condition_value=use_raw_condition_value,
             )
 
         return definitions
@@ -130,6 +205,33 @@ class CustomVariableRegistry:
         return [line.strip() for line in text.splitlines() if line.strip()]
 
     @staticmethod
+    def _parse_variable_values_as_dict(value: Any, field_name: str) -> dict[str, str]:
+        """
+        将变量配置值解析为字典映射表，用于 dict 模式
+
+        :param value: Any，原始变量候选值配置（JSON 对象字符串）
+        :param field_name: str，当前字段名，用于拼接报错信息
+        :return: dict[str, str]，键到值的映射
+        """
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {str(k).strip(): str(v).strip() for k, v in value.items() if str(k).strip()}
+
+        text = str(value).strip()
+        if not text:
+            return {}
+
+        try:
+            parsed_value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} 不是合法的 JSON 对象字符串: {exc}") from exc
+
+        if not isinstance(parsed_value, dict):
+            raise ValueError(f"{field_name} 必须是 JSON 对象")
+        return {str(k).strip(): str(v).strip() for k, v in parsed_value.items() if str(k).strip()}
+
+    @staticmethod
     def _require_text(value: Any, field_name: str) -> str:
         """
         校验文本字段非空并返回去空白结果
@@ -142,3 +244,16 @@ class CustomVariableRegistry:
         if not text:
             raise ValueError(f"{field_name} 不能为空")
         return text
+
+    @staticmethod
+    def _parse_optional_text(value: Any) -> str | None:
+        """
+        解析可选文本字段，空值返回 None
+
+        :param value: Any，原始字段值
+        :return: str | None，去除首尾空白后的文本或 None
+        """
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text if text else None

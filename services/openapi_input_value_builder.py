@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
-from ..clients import BizyAirOpenApiParameterBinding
 from src.common.logger import get_logger
+from .action_parameter_utils import ActionParameterDefinition
 from .builtin_variable_provider import BuiltinVariableProvider
 from .log_utils import short_repr
 from .template_placeholder_utils import TemplatePlaceholderUtils
+from ..clients import BizyAirOpenApiParameterBinding
 
 VALID_VALUE_TYPES = {"string", "int", "boolean", "json"}
 logger = get_logger("bizyair_generate_image_plugin")
+
 
 class BizyAirOpenApiInputValueBuilder:
     """负责将 action/context/config 组装为 OpenAPI input_values"""
@@ -29,8 +31,6 @@ class BizyAirOpenApiInputValueBuilder:
             return []
         if not isinstance(raw_bindings, list) or not raw_bindings:
             raise ValueError("openapi_parameter_mappings 必须是非空列表")
-
-        
 
         bindings: list[BizyAirOpenApiParameterBinding] = []
         for index, item in enumerate(raw_bindings):
@@ -67,6 +67,7 @@ class BizyAirOpenApiInputValueBuilder:
             action_inputs: dict[str, Any],
             action_parameter_names: set[str],
             required_action_parameters: set[str],
+            action_parameter_definitions: dict[str, ActionParameterDefinition] | None = None,
             builtin_placeholder_values: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
@@ -99,6 +100,7 @@ class BizyAirOpenApiInputValueBuilder:
                 action_inputs=action_inputs,
                 action_parameter_names=action_parameter_names,
                 required_action_parameters=required_action_parameters,
+                action_parameter_definitions=action_parameter_definitions or {},
             )
             logger.debug(
                 f"[参数构造] 模板替换完成: index={index}, field={binding.field!r}, "
@@ -224,6 +226,7 @@ class BizyAirOpenApiInputValueBuilder:
             action_inputs: dict[str, Any],
             action_parameter_names: set[str],
             required_action_parameters: set[str],
+            action_parameter_definitions: dict[str, ActionParameterDefinition],
     ) -> Any:
         """
         递归解析模板值中的占位符，并处理 action 参数缺失规则
@@ -248,6 +251,7 @@ class BizyAirOpenApiInputValueBuilder:
                 action_inputs=action_inputs,
                 action_parameter_names=action_parameter_names,
                 required_action_parameters=required_action_parameters,
+                action_parameter_definitions=action_parameter_definitions,
             )
 
         if isinstance(value_template, list):
@@ -258,6 +262,7 @@ class BizyAirOpenApiInputValueBuilder:
                     action_inputs=action_inputs,
                     action_parameter_names=action_parameter_names,
                     required_action_parameters=required_action_parameters,
+                    action_parameter_definitions=action_parameter_definitions,
                 )
                 for item in value_template
             ]
@@ -270,6 +275,7 @@ class BizyAirOpenApiInputValueBuilder:
                     action_inputs=action_inputs,
                     action_parameter_names=action_parameter_names,
                     required_action_parameters=required_action_parameters,
+                    action_parameter_definitions=action_parameter_definitions,
                 )
                 for key, value in value_template.items()
             }
@@ -283,6 +289,7 @@ class BizyAirOpenApiInputValueBuilder:
             action_inputs: dict[str, Any],
             action_parameter_names: set[str],
             required_action_parameters: set[str],
+            action_parameter_definitions: dict[str, ActionParameterDefinition],
     ) -> str:
         """
         处理替换完成后仍残留的占位符文本
@@ -294,17 +301,32 @@ class BizyAirOpenApiInputValueBuilder:
         :return: str，处理残留占位符后的最终文本
         """
         result = resolved_text
-        for placeholder_name in TemplatePlaceholderUtils.extract_placeholder_names(resolved_text):
-            if (
-                    placeholder_name in action_parameter_names
-                    and placeholder_name not in required_action_parameters
-                    and placeholder_name not in action_inputs
-            ):
-                result = result.replace(f"{{{placeholder_name}}}", "")
+        for placeholder_name in TemplatePlaceholderUtils.extract_placeholder_names(result):
+            if placeholder_name not in action_parameter_names:
+                raise ValueError(f"模板中引用了未定义的变量: {placeholder_name}, resolved_text={resolved_text!r}")
+
+            if placeholder_name in action_inputs:
                 continue
-            raise ValueError(
-                f"模板中引用了未定义的变量: {placeholder_name}, resolved_text={resolved_text!r}"
-            )
+
+            definition: Optional[ActionParameterDefinition] = action_parameter_definitions.get(placeholder_name, None)
+            if definition is None:
+                if placeholder_name not in required_action_parameters:
+                    result = result.replace(f"{{{placeholder_name}}}", "")
+                    continue
+                raise ValueError(f"模板中引用了未定义的变量: {placeholder_name}, resolved_text={resolved_text!r}")
+
+            if definition.required:
+                raise ValueError(f"必填参数 {placeholder_name} 未填写")
+
+            if definition.missing_behavior == "raise_error":
+                raise ValueError(f"选填参数 {placeholder_name} 未填写，且配置为 raise_error")
+
+            replacement = ""
+            if definition.missing_behavior == "use_default":
+                replacement = definition.default_value
+
+            result = result.replace(f"{{{placeholder_name}}}", replacement)
+
         return result
 
     @classmethod

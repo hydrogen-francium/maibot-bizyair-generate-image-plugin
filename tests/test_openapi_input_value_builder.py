@@ -1,6 +1,7 @@
 import pytest
 
 from clients.openapi_models import BizyAirOpenApiParameterBinding
+from services.action_parameter_utils import ActionParameterDefinition
 from services.openapi_input_value_builder import BizyAirOpenApiInputValueBuilder
 
 
@@ -40,14 +41,23 @@ class TestParseParameterBindings:
 
 
 class TestBuildInputValues:
-    def _build(self, bindings, template_context, action_inputs=None, action_parameter_names=None,
-               required_action_parameters=None, builtin_placeholder_values=None):
+    def _build(
+        self,
+        bindings,
+        template_context,
+        action_inputs=None,
+        action_parameter_names=None,
+        required_action_parameters=None,
+        action_parameter_definitions=None,
+        builtin_placeholder_values=None,
+    ):
         return BizyAirOpenApiInputValueBuilder.build_input_values(
             parameter_bindings=bindings,
             template_context=template_context,
             action_inputs=action_inputs or template_context,
             action_parameter_names=action_parameter_names or set(template_context.keys()),
             required_action_parameters=required_action_parameters or set(),
+            action_parameter_definitions=action_parameter_definitions or {},
             builtin_placeholder_values=builtin_placeholder_values or {},
         )
 
@@ -80,6 +90,9 @@ class TestBuildInputValues:
             {"prompt": "cat"},
             action_inputs={"prompt": "cat"},
             action_parameter_names={"prompt", "missing"},
+            action_parameter_definitions={
+                "missing": ActionParameterDefinition(name="missing", description="missing", required=False)
+            },
         )
         assert "n.x" not in result
 
@@ -92,6 +105,9 @@ class TestBuildInputValues:
             {"prompt": "cat"},
             action_inputs={"prompt": "cat"},
             action_parameter_names={"prompt", "missing"},
+            action_parameter_definitions={
+                "missing": ActionParameterDefinition(name="missing", description="missing", required=False)
+            },
         )
         assert result["n.x"] == ""
 
@@ -117,6 +133,106 @@ class TestBuildInputValues:
         bindings = [BizyAirOpenApiParameterBinding(field="n.flag", value_template="not-bool", value_type="boolean")]
         with pytest.raises(ValueError, match="not-bool"):
             self._build(bindings, {"prompt": "cat"})
+
+    def test_optional_missing_raise_error_only_when_referenced(self):
+        bindings = [BizyAirOpenApiParameterBinding(field="n.x", value_template="{aspect_ratio}", value_type="string")]
+        with pytest.raises(ValueError, match="raise_error"):
+            self._build(
+                bindings,
+                {"prompt": "cat"},
+                action_inputs={"prompt": "cat"},
+                action_parameter_names={"prompt", "aspect_ratio"},
+                action_parameter_definitions={
+                    "aspect_ratio": ActionParameterDefinition(
+                        name="aspect_ratio",
+                        description="比例",
+                        required=False,
+                        missing_behavior="raise_error",
+                    )
+                },
+            )
+
+    def test_optional_missing_use_default_when_referenced(self):
+        bindings = [BizyAirOpenApiParameterBinding(field="n.x", value_template="{aspect_ratio}", value_type="string")]
+        result = self._build(
+            bindings,
+            {"prompt": "cat"},
+            action_inputs={"prompt": "cat"},
+            action_parameter_names={"prompt", "aspect_ratio"},
+            action_parameter_definitions={
+                "aspect_ratio": ActionParameterDefinition(
+                    name="aspect_ratio",
+                    description="比例",
+                    required=False,
+                    missing_behavior="use_default",
+                    default_value="1:1",
+                )
+            },
+        )
+        assert result == {"n.x": "1:1"}
+
+    def test_optional_missing_keep_placeholder_becomes_empty_when_referenced(self):
+        bindings = [BizyAirOpenApiParameterBinding(field="n.x", value_template="{aspect_ratio}", value_type="string")]
+        result = self._build(
+            bindings,
+            {"prompt": "cat"},
+            action_inputs={"prompt": "cat"},
+            action_parameter_names={"prompt", "aspect_ratio"},
+            action_parameter_definitions={
+                "aspect_ratio": ActionParameterDefinition(
+                    name="aspect_ratio",
+                    description="比例",
+                    required=False,
+                    missing_behavior="keep_placeholder",
+                )
+            },
+        )
+        assert result == {}
+
+    def test_required_missing_raises_when_referenced(self):
+        bindings = [BizyAirOpenApiParameterBinding(field="n.x", value_template="{prompt}", value_type="string")]
+        with pytest.raises(ValueError, match="必填参数 prompt 未填写"):
+            self._build(
+                bindings,
+                {"style": "anime"},
+                action_inputs={"style": "anime"},
+                action_parameter_names={"prompt", "style"},
+                required_action_parameters={"prompt"},
+                action_parameter_definitions={
+                    "prompt": ActionParameterDefinition(name="prompt", description="提示词", required=True)
+                },
+            )
+
+    def test_optional_missing_not_referenced_does_not_raise(self):
+        bindings = [BizyAirOpenApiParameterBinding(field="n.x", value_template="fixed", value_type="string")]
+        result = self._build(
+            bindings,
+            {"prompt": "cat"},
+            action_inputs={"prompt": "cat"},
+            action_parameter_names={"prompt", "aspect_ratio"},
+            action_parameter_definitions={
+                "aspect_ratio": ActionParameterDefinition(
+                    name="aspect_ratio",
+                    description="比例",
+                    required=False,
+                    missing_behavior="raise_error",
+                )
+            },
+        )
+        assert result == {"n.x": "fixed"}
+
+    def test_multiple_occurrences_of_same_missing_optional_are_all_replaced(self):
+        bindings = [BizyAirOpenApiParameterBinding(field="n.x", value_template="x={a}, y={a}", value_type="string")]
+        result = self._build(
+            bindings,
+            {"prompt": "cat"},
+            action_inputs={"prompt": "cat"},
+            action_parameter_names={"prompt", "a"},
+            action_parameter_definitions={
+                "a": ActionParameterDefinition(name="a", description="A", required=False)
+            },
+        )
+        assert result == {"n.x": "x=, y="}
 
 
 class TestCollectBuiltinPlaceholderNamesFromBindings:

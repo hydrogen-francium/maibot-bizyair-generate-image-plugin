@@ -59,6 +59,114 @@ class TestParseVariableDefinitions:
         registry = _make_registry(raw_variables=[])
         assert registry.variable_definitions == {}
 
+    def test_condition_fields_are_parsed(self):
+        raw = [
+            {
+                "key": "style_hint",
+                "mode": "literal",
+                "condition_type": "length_gt",
+                "condition_source": "prompt",
+                "condition_value": "50",
+                "values": '["long"]',
+                "values_else": '["short"]',
+            }
+        ]
+        registry = _make_registry(raw_variables=raw, action_parameter_names={"prompt"})
+        definition = registry.variable_definitions["style_hint"]
+        assert definition.condition_type == "length_gt"
+        assert definition.condition_source == "prompt"
+        assert definition.condition_value == "50"
+        assert definition.values_else == ["short"]
+
+    def test_invalid_condition_type_raises(self):
+        raw = [
+            {
+                "key": "style_hint",
+                "mode": "literal",
+                "condition_type": "invalid",
+                "condition_source": "prompt",
+                "condition_value": "50",
+                "values": '["x"]',
+            }
+        ]
+        with pytest.raises(ValueError, match="condition_type"):
+            _make_registry(raw_variables=raw, action_parameter_names={"prompt"})
+
+    def test_fixed_true_does_not_require_source_or_value(self):
+        raw = [
+            {
+                "key": "style_hint",
+                "mode": "literal",
+                "condition_type": "fixed_true",
+                "values": '["x"]',
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        definition = registry.variable_definitions["style_hint"]
+        assert definition.condition_type == "fixed_true"
+        assert definition.condition_source is None
+        assert definition.condition_value is None
+
+    def test_fixed_false_does_not_require_source_or_value(self):
+        raw = [
+            {
+                "key": "style_hint",
+                "mode": "literal",
+                "condition_type": "fixed_false",
+                "values": '["x"]',
+                "values_else": '["y"]',
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        definition = registry.variable_definitions["style_hint"]
+        assert definition.condition_type == "fixed_false"
+        assert definition.condition_source is None
+        assert definition.condition_value is None
+
+    def test_dict_mode_parses_entries_source_and_fallback(self):
+        raw = [
+            {
+                "key": "emotion_prompt",
+                "mode": "dict",
+                "source": "emotion",
+                "values": '{"joy": "smile", "cool": "glasses"}',
+                "missing_behavior": "use_default",
+                "fallback_value": "neutral",
+            }
+        ]
+        registry = _make_registry(raw_variables=raw, action_parameter_names={"emotion"})
+        definition = registry.variable_definitions["emotion_prompt"]
+        assert definition.mode == "dict"
+        assert definition.source == "emotion"
+        assert definition.entries == {"joy": "smile", "cool": "glasses"}
+        assert definition.missing_behavior == "use_default"
+        assert definition.fallback_value == "neutral"
+        assert definition.values == []
+
+    def test_dict_mode_missing_source_raises(self):
+        raw = [
+            {
+                "key": "emotion_prompt",
+                "mode": "dict",
+                "values": '{"joy": "smile"}',
+            }
+        ]
+        with pytest.raises(ValueError, match="source 不能为空"):
+            _make_registry(raw_variables=raw)
+
+    def test_invalid_missing_behavior_raises(self):
+        raw = [
+            {
+                "key": "emotion_prompt",
+                "mode": "dict",
+                "source": "emotion",
+                "values": '{"joy": "smile"}',
+                "missing_behavior": "invalid",
+            }
+        ]
+        with pytest.raises(ValueError, match="missing_behavior"):
+            _make_registry(raw_variables=raw, action_parameter_names={"emotion"})
+
 
 class TestParseVariableValues:
     def test_json_list_string(self):
@@ -80,6 +188,30 @@ class TestParseVariableValues:
         raw = [{"key": "s", "mode": "literal", "values": None}]
         registry = _make_registry(raw_variables=raw)
         assert registry.variable_definitions["s"].values == []
+
+    def test_dict_values_json_object_string(self):
+        raw = [
+            {
+                "key": "emotion_prompt",
+                "mode": "dict",
+                "source": "emotion",
+                "values": '{"joy": "smile", "cool": "glasses"}',
+            }
+        ]
+        registry = _make_registry(raw_variables=raw, action_parameter_names={"emotion"})
+        assert registry.variable_definitions["emotion_prompt"].entries == {"joy": "smile", "cool": "glasses"}
+
+    def test_dict_values_non_object_raises(self):
+        raw = [
+            {
+                "key": "emotion_prompt",
+                "mode": "dict",
+                "source": "emotion",
+                "values": '["not", "object"]',
+            }
+        ]
+        with pytest.raises(ValueError, match="必须是 JSON 对象"):
+            _make_registry(raw_variables=raw, action_parameter_names={"emotion"})
 
 
 class TestCollectRequiredVariableKeys:

@@ -1,4 +1,16 @@
+from dataclasses import dataclass
 from typing import Any
+
+VALID_MISSING_BEHAVIORS = {"keep_placeholder", "raise_error", "use_default"}
+
+
+@dataclass(frozen=True)
+class ActionParameterDefinition:
+    name: str
+    description: str
+    required: bool
+    missing_behavior: str = "keep_placeholder"
+    default_value: str = ""
 
 
 def normalize_parameter(value: Any, field_name: str) -> str:
@@ -19,7 +31,7 @@ def is_parameter_required(value: Any, field_name: str) -> bool:
     """
     解析参数是否为必填项的配置值
 
-    :param value: Any，原始必填配置值，支持“必填”或“选填”
+    :param value: Any，原始必填配置值，支持"必填"或"选填"
     :param field_name: str，当前参数字段名，用于拼接报错信息
     :return: bool，参数是否应被视为必填
     """
@@ -28,32 +40,43 @@ def is_parameter_required(value: Any, field_name: str) -> bool:
         return True
     if text in {"", "选填"}:
         return False
-    raise ValueError(f"{field_name} 只能是“选填”或“必填”")
+    raise ValueError(f'{field_name} 只能是"选填"或"必填"')
 
 
-def build_action_parameters(raw_parameters: Any) -> tuple[dict[str, str], set[str]]:
+def build_action_parameters(raw_parameters: Any) -> dict[str, ActionParameterDefinition]:
     """
-    根据配置构造动作参数描述映射和必填参数集合
+    根据配置构造动作参数定义映射
 
     :param raw_parameters: Any，原始 action_parameters 配置列表
-    :return: tuple[dict[str, str], set[str]]，参数名到描述的映射及必填参数名集合
+    :return: dict[str, ActionParameterDefinition]，参数名到参数定义的映射
     """
     if not isinstance(raw_parameters, list) or not raw_parameters:
         raise ValueError("action_parameters 必须是非空列表")
 
-    action_parameters: dict[str, str] = {}
-    required_parameters: set[str] = set()
+    definitions: dict[str, ActionParameterDefinition] = {}
     for index, item in enumerate(raw_parameters):
         if not isinstance(item, dict):
             raise ValueError(f"action_parameters[{index}] 必须是对象")
 
         name = normalize_parameter(item.get("name"), f"action_parameters[{index}].name")
         description = normalize_parameter(item.get("description"), f"action_parameters[{index}].description")
-        if name in action_parameters:
+        if name in definitions:
             raise ValueError(f"action_parameters[{index}].name 重复: {name}")
 
-        action_parameters[name] = description
-        if is_parameter_required(item.get("required", "选填"), f"action_parameters[{index}].required"):
-            required_parameters.add(name)
+        required = is_parameter_required(item.get("required", "选填"), f"action_parameters[{index}].required")
 
-    return action_parameters, required_parameters
+        missing_behavior = str(item.get("missing_behavior", "keep_placeholder")).strip()
+        if missing_behavior not in VALID_MISSING_BEHAVIORS:
+            raise ValueError(f"action_parameters[{index}].missing_behavior 只能是 {', '.join(sorted(VALID_MISSING_BEHAVIORS))}")
+
+        default_value = "" if item.get("default_value") is None else str(item["default_value"]).strip()
+
+        definitions[name] = ActionParameterDefinition(
+            name=name,
+            description=description,
+            required=required,
+            missing_behavior=missing_behavior,
+            default_value=default_value,
+        )
+
+    return definitions
