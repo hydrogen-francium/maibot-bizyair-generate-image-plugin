@@ -76,6 +76,22 @@ DEFAULT_OPENAPI_PARAMETER_MAPPINGS = [
     {"preset_name": "default", "field": "18:BizyAir_NanoBananaProOfficial.resolution", "value_type": "string", "value": "{resolution}"},
 ]
 
+DEFAULT_NAI_PRESETS = [
+    {
+        "preset_name": "nai_default",
+        "description": "默认 NAI Chat 预设",
+        "base_url": "https://your-domain.example.com/v1",
+        "api_key": "",
+        "model": "nai-diffusion-4-5-full-anlas-0",
+    },
+]
+
+DEFAULT_NAI_PARAMETER_MAPPINGS = [
+    {"preset_name": "nai_default", "field": "prompt", "value_type": "string", "value": "{english_prompt}"},
+    {"preset_name": "nai_default", "field": "size", "value_type": "json", "value": "[832, 1216]"},
+    {"preset_name": "nai_default", "field": "steps", "value_type": "int", "value": "23"},
+]
+
 DEFAULT_PERMISSION_USER_LIST = []
 
 
@@ -93,6 +109,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
 
     config_section_descriptions = {
         "bizyair_client": "BizyAir 接口连接配置",
+        "nai_chat_client": "NAI Chat 接口连接配置",
         "bizyair_generate_image_plugin": "BizyAir 文生图 Action 配置",
         "permission_control": "权限管理配置",
         "custom_variables_config": "自定义变量配置",
@@ -104,38 +121,45 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         tabs=[
             ConfigTab(
                 id="client",
-                title="连接配置",
+                title="BizyAir 配置",
                 sections=["bizyair_client"],
                 icon="plug",
                 order=1,
+            ),
+            ConfigTab(
+                id="nai_chat",
+                title="NAI 配置",
+                sections=["nai_chat_client"],
+                icon="message-circle",
+                order=2,
             ),
             ConfigTab(
                 id="generate_image",
                 title="生图动作",
                 sections=["bizyair_generate_image_plugin"],
                 icon="image",
-                order=2,
+                order=3,
             ),
             ConfigTab(
                 id="permission_control",
                 title="权限管理",
                 sections=["permission_control"],
                 icon="shield",
-                order=3,
+                order=4,
             ),
             ConfigTab(
                 id="custom_variables",
                 title="自定义变量",
                 sections=["custom_variables_config"],
                 icon="variable",
-                order=4,
+                order=5,
             ),
             ConfigTab(
                 id="variable_llm",
                 title="变量 LLM",
                 sections=["variable_llm_config"],
                 icon="bot",
-                order=5,
+                order=6,
             ),
         ],
     )
@@ -174,11 +198,6 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 },
                 default=DEFAULT_APP_PRESETS,
                 description="App 预设列表。每个预设对应一个 BizyAir App ID，preset_name 全局唯一；description 仅用于备注，不参与运行时逻辑。",
-            ),
-            "active_preset": ConfigField(
-                type=str,
-                default="default",
-                description="当前激活的 App 预设名称，必须与 app_presets 中某个 preset_name 完全一致。",
             ),
             "timeout": ConfigField(
                 type=float,
@@ -228,7 +247,95 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 ),
             ),
         },
+        "nai_chat_client": {
+            "presets": ConfigField(
+                type=list,
+                item_type="object",
+                item_fields={
+                    "preset_name": {
+                        "type": "string",
+                        "label": "预设名称",
+                        "placeholder": "例如 nai_default，全局唯一，不可重复",
+                    },
+                    "description": {
+                        "type": "string",
+                        "label": "预设描述",
+                        "placeholder": "例如 默认 NAI Chat 模型，仅用于备注",
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "label": "基础地址",
+                        "placeholder": "例如 https://your-domain.example.com/v1",
+                    },
+                    "api_key": {
+                        "type": "string",
+                        "label": "API Key",
+                        "placeholder": "例如 sk-xxx",
+                    },
+                    "model": {
+                        "type": "string",
+                        "label": "模型名",
+                        "placeholder": "例如 nai-diffusion-4-5-full-anlas-0",
+                    },
+                },
+                default=DEFAULT_NAI_PRESETS,
+                description="NAI Chat 预设列表。每个预设内单独维护 base_url、api_key、model；preset_name 必须全局唯一。",
+            ),
+            "parameter_mappings": ConfigField(
+                type=list,
+                item_type="object",
+                item_fields={
+                    "preset_name": {
+                        "type": "string",
+                        "label": "关联预设",
+                        "placeholder": "例如 nai_default 或 nai_portrait,nai_landscape（多个用英文逗号分隔，不可为空）",
+                    },
+                    "field": {
+                        "type": "string",
+                        "label": "JSON 字段名",
+                        "placeholder": "例如 prompt、size、steps",
+                    },
+                    "value_type": {
+                        "type": "select",
+                        "label": "参数值类型",
+                        "choices": ["string", "int", "boolean", "json"],
+                        "default": "string",
+                    },
+                    "value": {
+                        "type": "string",
+                        "label": "参数值模板",
+                        "input_type": "textarea",
+                        "placeholder": '可填字符串、数字、布尔值、对象、数组，例如 "{prompt}"、"{random_seed}" 或 [832, 1216]',
+                    },
+                    "send_if_empty": {
+                        "type": "bool",
+                        "label": "值为空时仍传参",
+                        "default": False,
+                    },
+                },
+                default=DEFAULT_NAI_PARAMETER_MAPPINGS,
+                description=(
+                    "NAI Chat user message JSON 参数映射表。每一项必须包含 preset_name、field、value_type、value。"
+                    " preset_name 不可为空，可填多个预设名（英文逗号分隔），运行时只加载与 active_preset 匹配的条目。"
+                    " 解析结果会组装为 messages[0].content 对应的 JSON 字符串。"
+                    " 支持引用 action_parameters、自定义变量以及内置变量占位符。"
+                    " value 会按 value_type 强制转换为 string、int、boolean 或反序列化为 json。"
+                    " 当解析结果为空字符串、null、空数组或空对象时，默认跳过该参数；可通过 send_if_empty 控制是否仍然传参。"
+                    f" 当前内置变量包括：{' '.join(BUILTIN_VARIABLE_DESCRIPTIONS)}"
+                ),
+            ),
+            "timeout": ConfigField(
+                type=float,
+                default=180.0,
+                description="调用 NAI Chat 和解析图片的超时时间（秒）。",
+            ),
+        },
         "bizyair_generate_image_plugin": {
+            "active_preset": ConfigField(
+                type=str,
+                default="default",
+                description="当前激活的生图预设名称。会同时在 BizyAir 与 NAI 两类预设中查找，必须全局唯一。",
+            ),
             "send_text_before_image": ConfigField(
                 type=bool,
                 default=False,
@@ -475,7 +582,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         GenerateImageAction.required_action_parameters = {
             name for name, definition in action_parameters.items() if definition.required
         }
-        GenerateImageAction.active_preset = str(self.config.get("bizyair_client", {}).get("active_preset", "default")).strip()
+        GenerateImageAction.active_preset = str(self.config.get("bizyair_generate_image_plugin", {}).get("active_preset", "default")).strip()
         permission_manager.configure(
             global_blacklist=permission_config.get("global_blacklist", DEFAULT_PERMISSION_USER_LIST),
             command_user_list=permission_config.get("command_user_list", DEFAULT_PERMISSION_USER_LIST),

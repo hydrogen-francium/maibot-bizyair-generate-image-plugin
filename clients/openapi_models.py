@@ -22,6 +22,16 @@ class BizyAirOpenApiParameterBinding:
     send_if_empty: bool = False
 
 
+@dataclass(frozen=True)
+class BizyAirParameterBinding:
+    """统一的参数映射定义对象"""
+
+    field: str
+    value_template: Any
+    value_type: str = "string"
+    send_if_empty: bool = False
+
+
 @dataclass
 class BizyAirOpenApiResponse:
     type: str

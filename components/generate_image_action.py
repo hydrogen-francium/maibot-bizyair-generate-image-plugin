@@ -12,13 +12,16 @@ from src.plugin_system.apis import generator_api, llm_api
 from src.plugin_system.base.component_types import ActionActivationType
 from ..clients import (
     BizyAirOpenApiClient,
+    NaiChatClient,
 )
 from ..services import permission_manager
 from ..services.action_parameter_utils import ActionParameterDefinition
 from ..services.builtin_variable_provider import BuiltinVariableProvider
 from ..services.custom_variable_registry import CustomVariableRegistry
 from ..services.log_utils import short_repr
+from ..services.nai_chat_input_value_builder import NaiChatInputValueBuilder
 from ..services.openapi_input_value_builder import BizyAirOpenApiInputValueBuilder
+from ..services.preset_resolution import resolve_active_preset
 from ..services.variable_dependency_resolver import VariableDependencyResolver
 
 logger = get_logger("bizyair_generate_image_plugin")
@@ -82,16 +85,17 @@ class GenerateImageAction(BaseAction):
             action_inputs = self._collect_action_inputs()
             active_preset = str(self.active_preset).strip()
 
-            failure_stage = "resolve_app_id"
-            app_id = self._resolve_active_app_id(active_preset)
+            failure_stage = "resolve_preset"
+            resolved_preset = self._resolve_active_preset(active_preset)
+            provider = resolved_preset["provider"]
 
             failure_stage = "filter_parameter_bindings"
-            all_parameter_bindings_config = self.get_config("bizyair_client.openapi_parameter_mappings", [])
+            all_parameter_bindings_config = self._get_parameter_bindings_config(provider)
             parameter_bindings_config = self._filter_parameter_bindings_by_preset(
                 all_parameter_bindings_config, active_preset
             )
             logger.info(
-                f"{self.log_prefix} 生图配置摘要: active_preset={active_preset!r}, app_id={app_id}, "
+                f"{self.log_prefix} 生图配置摘要: provider={provider!r}, active_preset={active_preset!r}, resolved_preset={short_repr(resolved_preset)}, "
                 f"action_inputs={short_repr(action_inputs)}, custom_variable_keys={list(self.get_config('custom_variables_config.custom_variables', [])) and [str(item.get('key', '')).strip() for item in self.get_config('custom_variables_config.custom_variables', []) if isinstance(item, dict) and str(item.get('key', '')).strip()]}, "
                 f"binding_fields={[str(item.get('field', '')).strip() for item in parameter_bindings_config if isinstance(item, dict)]}"
             )
@@ -120,9 +124,7 @@ class GenerateImageAction(BaseAction):
             )
 
             failure_stage = "build_builtin_placeholders"
-            required_builtin_names = BizyAirOpenApiInputValueBuilder.collect_builtin_placeholder_names_from_bindings(
-                parameter_bindings_config
-            )
+            required_builtin_names = self._collect_builtin_placeholder_names(provider, parameter_bindings_config)
             builtin_placeholder_values = builtin_variable_provider.build_placeholder_values(required_builtin_names)
             logger.debug(
                 f"{self.log_prefix} 内置变量摘要: required_builtin_names={sorted(required_builtin_names)}, "
@@ -145,31 +147,19 @@ class GenerateImageAction(BaseAction):
             )
             template_context = {**resolved_action_inputs, **custom_variable_values}
 
-            failure_stage = "parse_parameter_bindings"
-            parameter_bindings = BizyAirOpenApiInputValueBuilder.parse_parameter_bindings(parameter_bindings_config)
-
-            failure_stage = "build_input_values"
-            input_values = BizyAirOpenApiInputValueBuilder.build_input_values(
-                parameter_bindings=parameter_bindings,
+            failure_stage = "build_provider_payload"
+            provider_payload, timeout = self._build_provider_payload(
+                provider=provider,
+                resolved_preset=resolved_preset,
+                parameter_bindings_config=parameter_bindings_config,
                 template_context=template_context,
-                action_inputs=resolved_action_inputs,
-                action_parameter_names=set(self.action_parameters.keys()),
-                required_action_parameters=set(self.required_action_parameters),
-                action_parameter_definitions=self.action_parameters,
+                resolved_action_inputs=resolved_action_inputs,
                 builtin_placeholder_values=builtin_placeholder_values,
             )
 
-            failure_stage = "read_token"
-            token = str(self.get_config("bizyair_client.bearer_token", "")).strip()
-            if not token:
-                raise ValueError("插件未配置 bearer_token")
-
-            failure_stage = "read_timeout"
-            timeout = float(str(self.get_config("bizyair_client.timeout", 180.0)).strip())
-
             logger.info(
-                f"{self.log_prefix} 图片生成摘要: provider=openapi, active_preset={active_preset!r}, "
-                f"app_id={app_id}, "
+                f"{self.log_prefix} 图片生成摘要: provider={provider}, active_preset={active_preset!r}, "
+                f"resolved_preset={short_repr(resolved_preset)}, "
                 f"action_inputs={resolved_action_inputs!r}, "
                 f"custom_variable_values={custom_variable_values!r}, "
                 f"timeout={timeout}")
@@ -177,9 +167,9 @@ class GenerateImageAction(BaseAction):
             failure_stage = "generate_image_bytes"
             generate_image_start_time = time.perf_counter()
             image_bytes = await self._generate_image_bytes(
-                token=token,
-                app_id=app_id,
-                input_values=input_values,
+                provider=provider,
+                resolved_preset=resolved_preset,
+                provider_payload=provider_payload,
                 timeout=timeout,
             )
             generate_image_elapsed_seconds = time.perf_counter() - generate_image_start_time
@@ -301,30 +291,95 @@ class GenerateImageAction(BaseAction):
 
         await self.send_text(raw_reply, storage_message=True)
 
-    def _resolve_active_app_id(self, active_preset: str) -> int:
-        """从 app_presets 中查找 active_preset 对应的 app_id"""
-        if not active_preset:
-            raise ValueError("active_preset 不能为空，请在配置中设置 active_preset")
-        app_presets = self.get_config("bizyair_client.app_presets", [])
-        if not isinstance(app_presets, list) or not app_presets:
-            raise ValueError("app_presets 未配置或为空列表")
-        available_presets = []
-        for index, preset in enumerate(app_presets):
-            if not isinstance(preset, dict):
-                raise ValueError(f"app_presets[{index}] 必须是对象")
-            name = str(preset.get("preset_name", "")).strip()
-            if name:
-                available_presets.append(name)
-            if name == active_preset:
-                raw_app_id = preset.get("app_id")
-                if raw_app_id is None:
-                    raise ValueError(f"app_presets 中 preset_name={active_preset!r} 的 app_id 为空")
-                logger.info(
-                    f"{self.log_prefix} 匹配到 app preset: active_preset={active_preset!r}, "
-                    f"app_id={raw_app_id}, available_presets={available_presets}"
-                )
-                return int(raw_app_id)
-        raise ValueError(f"app_presets 中找不到 preset_name={active_preset!r}，请检查 active_preset 配置")
+    def _resolve_active_preset(self, active_preset: str) -> dict[str, Any]:
+        """从两个预设列表中查找 active_preset 对应的完整预设配置"""
+        return resolve_active_preset(
+            active_preset=active_preset,
+            bizyair_presets=self.get_config("bizyair_client.app_presets", []),
+            nai_presets=self.get_config("nai_chat_client.presets", []),
+        )
+
+    def _get_parameter_bindings_config(self, provider: str) -> list:
+        """按后端读取参数映射配置"""
+        if provider == "bizyair_openapi":
+            return self.get_config("bizyair_client.openapi_parameter_mappings", [])
+        if provider == "nai_chat":
+            return self.get_config("nai_chat_client.parameter_mappings", [])
+        raise ValueError(f"未知的 provider: {provider}")
+
+    def _collect_builtin_placeholder_names(self, provider: str, parameter_bindings_config: Any) -> set[str]:
+        """按后端提取本次需要构造的内置变量名"""
+        if provider == "bizyair_openapi":
+            return BizyAirOpenApiInputValueBuilder.collect_builtin_placeholder_names_from_bindings(parameter_bindings_config)
+        if provider == "nai_chat":
+            return NaiChatInputValueBuilder.collect_builtin_placeholder_names_from_bindings(parameter_bindings_config)
+        raise ValueError(f"未知的 provider: {provider}")
+
+    def _build_provider_payload(
+            self,
+            provider: str,
+            resolved_preset: dict[str, Any],
+            parameter_bindings_config: list,
+            template_context: dict[str, Any],
+            resolved_action_inputs: dict[str, Any],
+            builtin_placeholder_values: dict[str, Any],
+    ) -> tuple[dict[str, Any], float]:
+        """按后端构造请求载荷与超时配置"""
+        preset = resolved_preset["preset"]
+
+        if provider == "bizyair_openapi":
+            parameter_bindings = BizyAirOpenApiInputValueBuilder.parse_parameter_bindings(parameter_bindings_config)
+            input_values = BizyAirOpenApiInputValueBuilder.build_input_values(
+                parameter_bindings=parameter_bindings,
+                template_context=template_context,
+                action_inputs=resolved_action_inputs,
+                action_parameter_names=set(self.action_parameters.keys()),
+                required_action_parameters=set(self.required_action_parameters),
+                action_parameter_definitions=self.action_parameters,
+                builtin_placeholder_values=builtin_placeholder_values,
+            )
+            token = str(self.get_config("bizyair_client.bearer_token", "")).strip()
+            if not token:
+                raise ValueError("插件未配置 bizyair_client.bearer_token")
+            timeout = float(str(self.get_config("bizyair_client.timeout", 180.0)).strip())
+            raw_app_id = preset.get("app_id")
+            if raw_app_id is None:
+                raise ValueError(f"BizyAir 预设 {self.active_preset!r} 的 app_id 为空")
+            return {
+                "token": token,
+                "app_id": int(raw_app_id),
+                "input_values": input_values,
+            }, timeout
+
+        if provider == "nai_chat":
+            parameter_bindings = NaiChatInputValueBuilder.parse_parameter_bindings(parameter_bindings_config)
+            content_json = NaiChatInputValueBuilder.build_message_content_json(
+                parameter_bindings=parameter_bindings,
+                template_context=template_context,
+                action_inputs=resolved_action_inputs,
+                action_parameter_names=set(self.action_parameters.keys()),
+                required_action_parameters=set(self.required_action_parameters),
+                action_parameter_definitions=self.action_parameters,
+                builtin_placeholder_values=builtin_placeholder_values,
+            )
+            api_key = str(preset.get("api_key", "")).strip()
+            base_url = str(preset.get("base_url", "")).strip()
+            model = str(preset.get("model", "")).strip()
+            if not api_key:
+                raise ValueError(f"NAI 预设 {self.active_preset!r} 的 api_key 为空")
+            if not base_url:
+                raise ValueError(f"NAI 预设 {self.active_preset!r} 的 base_url 为空")
+            if not model:
+                raise ValueError(f"NAI 预设 {self.active_preset!r} 的 model 为空")
+            timeout = float(str(self.get_config("nai_chat_client.timeout", 180.0)).strip())
+            return {
+                "api_key": api_key,
+                "base_url": base_url,
+                "model": model,
+                "content_json": content_json,
+            }, timeout
+
+        raise ValueError(f"未知的 provider: {provider}")
 
     @staticmethod
     def _filter_parameter_bindings_by_preset(
@@ -357,19 +412,31 @@ class GenerateImageAction(BaseAction):
 
     async def _generate_image_bytes(
             self,
-            token: str,
-            app_id: int,
-            input_values: dict[str, Any],
+            provider: str,
+            resolved_preset: dict[str, Any],
+            provider_payload: dict[str, Any],
             timeout: float,
     ) -> bytes:
-        """创建 OpenAPI 客户端并返回生成后的图片字节"""
-        client = BizyAirOpenApiClient(
-            bearer_token=token,
-            api_url=str(self.get_config("bizyair_client.openapi_url", BizyAirOpenApiClient.API_URL)).strip(),
-            web_app_id=app_id,
-            timeout=timeout,
-        )
-        return await client.generate_and_download(input_values=input_values)
+        """按后端创建客户端并返回生成后的图片字节"""
+        if provider == "bizyair_openapi":
+            client = BizyAirOpenApiClient(
+                bearer_token=provider_payload["token"],
+                api_url=str(self.get_config("bizyair_client.openapi_url", BizyAirOpenApiClient.API_URL)).strip(),
+                web_app_id=provider_payload["app_id"],
+                timeout=timeout,
+            )
+            return await client.generate_and_download(input_values=provider_payload["input_values"])
+
+        if provider == "nai_chat":
+            client = NaiChatClient(
+                bearer_token=provider_payload["api_key"],
+                base_url=provider_payload["base_url"],
+                model=provider_payload["model"],
+                timeout=timeout,
+            )
+            return await client.generate_and_download(content_json=provider_payload["content_json"])
+
+        raise ValueError(f"未知的 provider: {provider}, resolved_preset={resolved_preset}")
 
     def _build_action_display(self, action_inputs: dict[str, Any]) -> str:
         """构造写入动作记录的简短展示文本"""

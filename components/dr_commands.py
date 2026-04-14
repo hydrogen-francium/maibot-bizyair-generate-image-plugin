@@ -19,6 +19,26 @@ _PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_PATH = os.path.join(_PLUGIN_DIR, "config.toml")
 
 
+def _collect_all_presets(command: BaseCommand) -> list[dict]:
+    """收集两个后端下的所有预设，并标注来源后端"""
+    collected: list[dict] = []
+    for provider, config_key in (
+            ("bizyair_openapi", "bizyair_client.app_presets"),
+            ("nai_chat", "nai_chat_client.presets"),
+    ):
+        presets = command.get_config(config_key, []) or []
+        if not isinstance(presets, list):
+            raise ValueError(f"{config_key} 必须是列表")
+        for index, preset in enumerate(presets):
+            if not isinstance(preset, dict):
+                raise ValueError(f"{config_key}[{index}] 必须是对象")
+            collected.append({
+                "provider": provider,
+                "preset": preset,
+            })
+    return collected
+
+
 class DrListCommand(BaseCommand):
     """列出所有可用的 App 预设（/dr list）"""
 
@@ -32,7 +52,7 @@ class DrListCommand(BaseCommand):
         if not has_permission:
             return True, deny_reason, 1
 
-        presets = self.get_config("bizyair_client.app_presets", []) or []
+        presets = _collect_all_presets(self)
         active: str = GenerateImageAction.active_preset
 
         if not presets:
@@ -40,13 +60,15 @@ class DrListCommand(BaseCommand):
             return True, "列出预设：无预设", 1
 
         lines = ["📋 当前可用的画图 App 预设：\n"]
-        for p in presets:
+        for item in presets:
+            p = item["preset"]
+            provider = item["provider"]
             name = p.get("preset_name", "?")
-            app_id = p.get("app_id", "?")
             desc = p.get("description", "")
+            provider_label = "BizyAir" if provider == "bizyair_openapi" else "NAI"
             marker = " ✅(当前使用)" if name == active else ""
             desc_part = f"  {desc}" if desc else ""
-            lines.append(f"• {name} (App ID: {app_id}){marker}{desc_part}")
+            lines.append(f"• {name} [{provider_label}]{marker}{desc_part}")
 
         await self.send_text("\n".join(lines))
         return True, f"列出了 {len(presets)} 个预设", 1
@@ -70,8 +92,8 @@ class DrUseCommand(BaseCommand):
             await self.send_text("用法：/dr use <预设名称>")
             return False, "缺少预设名称参数", 1
 
-        presets = self.get_config("bizyair_client.app_presets", []) or []
-        available_names = [p.get("preset_name", "") for p in presets]
+        presets = _collect_all_presets(self)
+        available_names = [item["preset"].get("preset_name", "") for item in presets]
 
         if preset_name not in available_names:
             names_str = "、".join(available_names) if available_names else "（无）"
@@ -92,7 +114,7 @@ class DrUseCommand(BaseCommand):
         try:
             from src.common.toml_utils import save_toml_with_format
             save_toml_with_format(
-                {"bizyair_client": {"active_preset": preset_name}},
+                {"bizyair_generate_image_plugin": {"active_preset": preset_name}},
                 _CONFIG_PATH,
                 preserve_comments=True,
             )

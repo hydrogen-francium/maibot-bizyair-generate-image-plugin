@@ -1,14 +1,19 @@
 from .base import BizyAirBaseClient, BizyAirImageResult, BizyAirOpenApiOutput
+from .nai_chat_client import NaiChatClient, NaiChatError, NaiChatProtocolError
 from .openapi_client import BizyAirOpenApiClient
-from .openapi_models import BizyAirOpenApiError, BizyAirOpenApiParameterBinding, BizyAirOpenApiProtocolError, BizyAirOpenApiResponse
+from .openapi_models import BizyAirOpenApiError, BizyAirOpenApiParameterBinding, BizyAirOpenApiProtocolError, BizyAirOpenApiResponse, BizyAirParameterBinding
 
 __all__ = [
     "BizyAirBaseClient",
     "BizyAirImageResult",
     "BizyAirOpenApiOutput",
+    "NaiChatClient",
+    "NaiChatError",
+    "NaiChatProtocolError",
     "BizyAirOpenApiClient",
     "BizyAirOpenApiError",
     "BizyAirOpenApiParameterBinding",
+    "BizyAirParameterBinding",
     "BizyAirOpenApiProtocolError",
     "BizyAirOpenApiResponse",
 ]
