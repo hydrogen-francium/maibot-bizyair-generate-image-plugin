@@ -1,4 +1,5 @@
 import base64
+import time
 import traceback
 from typing import Any, Tuple
 
@@ -174,14 +175,19 @@ class GenerateImageAction(BaseAction):
                 f"timeout={timeout}")
 
             failure_stage = "generate_image_bytes"
+            generate_image_start_time = time.perf_counter()
             image_bytes = await self._generate_image_bytes(
                 token=token,
                 app_id=app_id,
                 input_values=input_values,
                 timeout=timeout,
             )
+            generate_image_elapsed_seconds = time.perf_counter() - generate_image_start_time
             image_size_mb = len(image_bytes) / (1024 * 1024)
-            logger.info(f"{self.log_prefix} 图片生成完成，已获取图片数据: size={image_size_mb:.2f}MB")
+            logger.info(
+                f"{self.log_prefix} 图片生成完成，已获取图片数据: size={image_size_mb:.2f}MB, "
+                f"generate_time={generate_image_elapsed_seconds:.2f}s"
+            )
 
             if not image_bytes:
                 raise ValueError("未获取到图片数据")

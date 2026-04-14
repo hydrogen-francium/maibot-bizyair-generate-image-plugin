@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import re
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal, Mapping, AbstractSet
@@ -438,6 +439,7 @@ class VariableDependencyResolver:
                 f"[依赖解析] custom_variable 解析前: name={name!r}, mode={definition.mode!r}, "
                 f"candidates={short_repr(definition.values)}"
             )
+            custom_variable_start_time = time.perf_counter()
             resolved_value = await self._resolve_custom_variable(
                 definition=definition,
                 resolved_context=self._resolved_context,
@@ -445,9 +447,13 @@ class VariableDependencyResolver:
                 builtin_variable_provider=self._builtin_variable_provider,
                 llm_value_factory=self._llm_value_factory,
             )
+            custom_variable_elapsed_seconds = time.perf_counter() - custom_variable_start_time
             self._resolved_custom_variables[name] = resolved_value
             self._resolved_context[name] = resolved_value
-            logger.info(f"[依赖解析] custom_variable 解析完成: name={name!r}, value={short_repr(resolved_value)}")
+            logger.info(
+                f"[依赖解析] custom_variable 解析完成: name={name!r}, "
+                f"value={short_repr(resolved_value)}, elapsed={custom_variable_elapsed_seconds:.3f}s"
+            )
         finally:
             self._resolving_set.discard(name)
 
