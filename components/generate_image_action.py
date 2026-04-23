@@ -5,7 +5,7 @@ from typing import Any, List, Optional, Tuple
 
 from maim_message import Seg
 
-from clients import BizyAirImageResult
+from ..clients import BizyAirImageResult
 from src.common.logger import get_logger
 from src.config.api_ada_configs import TaskConfig
 from src.config.config import global_config
