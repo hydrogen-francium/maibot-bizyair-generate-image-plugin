@@ -1,9 +1,12 @@
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from .builtin_variable_provider import BuiltinVariableProvider
 from .template_placeholder_utils import TemplatePlaceholderUtils
+
+VALID_VARIABLE_MODES = {"literal", "llm", "dict", "extract", "daily_llm"}
 
 VALID_CONDITION_TYPES = {
     "fixed_true", "fixed_false",
@@ -33,6 +36,8 @@ class CustomVariableDefinition:
     fallback_value: str = ""
     use_raw_condition_source: bool = False
     use_raw_condition_value: bool = False
+    pattern: str | None = None
+    group: int = 1
 
 
 class CustomVariableRegistry:
@@ -101,8 +106,8 @@ class CustomVariableRegistry:
                 raise ValueError(f"custom_variables[{index}].key 重复: {key}")
 
             mode = self._require_text(item.get("mode", "literal"), f"custom_variables[{index}].mode").lower()
-            if mode not in {"literal", "llm", "dict"}:
-                raise ValueError(f"custom_variables[{index}].mode 只能是 literal、llm 或 dict")
+            if mode not in VALID_VARIABLE_MODES:
+                raise ValueError(f"custom_variables[{index}].mode 只能是 {', '.join(sorted(VALID_VARIABLE_MODES))}")
 
             probability = float(str(item.get("probability", 1.0)).strip())
             if probability < 0 or probability > 1:
@@ -130,10 +135,33 @@ class CustomVariableRegistry:
             entries: dict[str, str] = {}
             missing_behavior = "keep_placeholder"
             fallback_value = ""
+            pattern: str | None = None
+            group: int = 1
 
             if mode == "dict":
                 source = self._require_text(item.get("source"), f"custom_variables[{index}].source")
                 entries = self._parse_variable_values_as_dict(item.get("values"), f"custom_variables[{index}].values")
+                missing_behavior = str(item.get("missing_behavior", "keep_placeholder")).strip()
+                if missing_behavior not in VALID_MISSING_BEHAVIORS:
+                    raise ValueError(f"custom_variables[{index}].missing_behavior 只能是 "                        f"{', '.join(sorted(VALID_MISSING_BEHAVIORS))}")
+                fallback_value = "" if item.get("fallback_value") is None else str(item["fallback_value"]).strip()
+                values: list[str] = []
+            elif mode == "extract":
+                source = self._require_text(item.get("source"), f"custom_variables[{index}].source")
+                pattern_value = self._require_text(item.get("pattern"), f"custom_variables[{index}].pattern")
+                try:
+                    re.compile(pattern_value)
+                except re.error as exc:
+                    raise ValueError(f"custom_variables[{index}].pattern 不是合法的正则: {exc}") from exc
+                pattern = pattern_value
+                group_raw = item.get("group", 1)
+                try:
+                    group_int = int(str(group_raw).strip())
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(f"custom_variables[{index}].group 必须是整数: {group_raw}") from exc
+                if group_int < 0:
+                    raise ValueError(f"custom_variables[{index}].group 必须 >= 0: {group_int}")
+                group = group_int
                 missing_behavior = str(item.get("missing_behavior", "keep_placeholder")).strip()
                 if missing_behavior not in VALID_MISSING_BEHAVIORS:
                     raise ValueError(f"custom_variables[{index}].missing_behavior 只能是 "                        f"{', '.join(sorted(VALID_MISSING_BEHAVIORS))}")
@@ -170,6 +198,8 @@ class CustomVariableRegistry:
                 fallback_value=fallback_value,
                 use_raw_condition_source=use_raw_condition_source,
                 use_raw_condition_value=use_raw_condition_value,
+                pattern=pattern,
+                group=group,
             )
 
         return definitions

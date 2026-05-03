@@ -133,7 +133,7 @@ class VariableDependencyResolver:
         hard_dependencies: set[str] = set()
         soft_dependency_reasons: dict[str, frozenset[str]] = {}
 
-        if definition.mode == "dict":
+        if definition.mode in ("dict", "extract"):
             if definition.source and definition.source in known_node_names:
                 hard_dependencies.add(definition.source)
             if definition.fallback_value:
@@ -551,6 +551,36 @@ class VariableDependencyResolver:
                 definition.fallback_value, resolved_context, builtin_placeholder_values,
             ))
 
+        if definition.mode == "extract":
+            source_value = self._resolve_named_value(
+                definition.source,
+                resolved_context,
+                builtin_placeholder_values,
+                builtin_variable_provider,
+            )
+            source_text = "" if source_value is None else str(source_value)
+            extracted: str | None = None
+            if definition.pattern:
+                match = re.search(definition.pattern, source_text)
+                if match is not None:
+                    try:
+                        extracted = match.group(definition.group)
+                    except IndexError:
+                        extracted = None
+            if extracted is not None:
+                return extracted.strip()
+            if definition.missing_behavior == "keep_placeholder":
+                return f"{{{definition.key}}}"
+            if definition.missing_behavior == "raise_error":
+                raise ValueError(
+                    f"extract 类型变量 {definition.key} 的正则未匹配 source={definition.source!r}"
+                )
+            # use_default: 只有真正走到 fallback 分支时才解析其依赖
+            await self._ensure_template_dependencies_resolved(definition.fallback_value)
+            return str(self._substitute_placeholders_in_value(
+                definition.fallback_value, resolved_context, builtin_placeholder_values,
+            ))
+
         if random.random() > definition.probability:
             return ""
 
@@ -621,6 +651,15 @@ class VariableDependencyResolver:
 
         if not selected_value:
             return ""
+
+        if definition.mode == "daily_llm":
+            from .llm_value_cache import get_daily_llm_cache
+            cache = get_daily_llm_cache()
+            return await cache.get_or_generate(
+                definition.key,
+                lambda: llm_value_factory(selected_value),
+            )
+
         return await llm_value_factory(selected_value)
 
     def _resolve_named_value(
@@ -745,7 +784,7 @@ class VariableDependencyResolver:
                     continue
 
                 referenced_custom_vars: set[str] = set()
-                if definition.mode == "dict":
+                if definition.mode in ("dict", "extract"):
                     if definition.source in all_custom_var_names:
                         referenced_custom_vars.add(definition.source)
                     # fallback_value 中的引用也纳入传递闭包

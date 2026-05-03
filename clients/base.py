@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import base64
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import httpx
-
-logger = logging.getLogger("bizyair_generate_image_plugin")
 
 
 @dataclass
@@ -18,66 +14,13 @@ class BizyAirImageResult:
 
     image_url: str
 
-    def __str__(self) -> str:
-        """返回对象的字符串表示，对长 URL 进行截断处理。"""
-        if self.image_url.startswith("data:image/"):
-            # 对于 data URL，只显示前面的 header 部分
-            header_part = self.image_url.split(",", 1)[0]
-            return f"BizyAirImageResult(image_url='{header_part},...')"
-        else:
-            return f"BizyAirImageResult(image_url='{self.image_url}')"
+    async def download_bytes(self, timeout: float = 180.0) -> bytes:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get(self.image_url, timeout=timeout)
+            response.raise_for_status()
+            return response.content
 
-    def __repr__(self) -> str:
-        """返回对象的 repr 表示，与 __str__ 保持一致。"""
-        return self.__str__()
-
-    async def download_bytes(
-        self,
-        timeout: float = 60.0,
-        max_retries: int = 3,
-    ) -> bytes:
-        """
-        下载图片字节数据，支持失败重试，同时支持 data URL 格式的图片
-
-        :param timeout: float，单次下载请求的超时时间（秒）
-        :param max_retries: int，最大重试次数（不含首次请求）
-        :return: bytes，下载得到的图片二进制数据
-        """
-        # 先检查是否是 data URL 格式
-        if self.image_url.startswith("data:image/"):
-            # 解析 data URL
-            try:
-                # 格式: data:image/[subtype];base64,[data]
-                header, data = self.image_url.split(",", 1)
-                if ";base64" in header:
-                    return base64.b64decode(data)
-                else:
-                    # 如果不是 base64 编码（虽然我们一般只传 base64），这里做个兜底
-                    raise ValueError("不支持非 base64 编码的 data URL")
-            except Exception as e:
-                logger.warning(
-                    f"解析 data URL 失败: url={self.image_url[:100]}..., error={type(e).__name__}: {e}"
-                )
-                raise
-
-        # 否则走正常的 HTTP 下载流程
-        last_exception: Exception | None = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                    response = await client.get(self.image_url, timeout=timeout)
-                    response.raise_for_status()
-                    return response.content
-            except Exception as e:
-                last_exception = e
-                logger.warning(
-                    f"图片下载失败 (第 {attempt}/{max_retries} 次): "
-                    f"url={self.image_url}, error={type(e).__name__}: {e}"
-                )
-        # 所有重试均失败，抛出最后一次的异常
-        raise last_exception  # type: ignore[misc]
-
-    async def save_to_file(self, file_path: str | Path, timeout: float = 60.0) -> Path:
+    async def save_to_file(self, file_path: str | Path, timeout: float = 180.0) -> Path:
         data = await self.download_bytes(timeout=timeout)
         path = Path(file_path)
         path.write_bytes(data)
@@ -142,11 +85,11 @@ class BizyAirBaseClient(ABC):
 
     async def _download_image_bytes(self, image_url: str) -> bytes:
         result = BizyAirImageResult(image_url=self._validate_url(image_url, "image_url"))
-        return await result.download_bytes()
+        return await result.download_bytes(timeout=self.timeout)
 
     async def _save_image_file(self, image_url: str, file_path: str | Path) -> Path:
         result = BizyAirImageResult(image_url=self._validate_url(image_url, "image_url"))
-        return await result.save_to_file(file_path=file_path)
+        return await result.save_to_file(file_path=file_path, timeout=self.timeout)
 
     @abstractmethod
     async def generate_image(self, *args, **kwargs) -> BizyAirImageResult:
@@ -154,4 +97,4 @@ class BizyAirBaseClient(ABC):
 
     async def generate_and_save(self, *args, file_path: str | Path, **kwargs) -> Path:
         result = await self.generate_image(*args, **kwargs)
-        return await result.save_to_file(file_path=file_path)
+        return await result.save_to_file(file_path=file_path, timeout=self.timeout)
