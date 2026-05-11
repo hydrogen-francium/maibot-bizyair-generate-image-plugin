@@ -1,9 +1,11 @@
 """按天缓存 LLM 生成结果。
 
 用于 mode = "daily_llm" 的自定义变量：
-- 第一次访问当天 → 调 LLM 生成 → 写文件 → 返回
+- 第一次访问当天 → 调 LLM 生成 → 校验通过 → 写文件 → 返回
 - 当天再次访问 → 直接读文件返回
 - 跨天访问 → 旧缓存被惰性清理，重新生成
+
+校验失败时不写盘，直接抛 DailyLlmValidationError，避免污染当天剩余请求。
 
 缓存文件命名：.var_cache/{key}.{YYYY-MM-DD}.json
 """
@@ -25,6 +27,10 @@ def get_daily_llm_cache() -> "DailyLlmCache":
         plugin_root = Path(__file__).resolve().parent.parent
         _singleton = DailyLlmCache(plugin_root / ".var_cache")
     return _singleton
+
+
+class DailyLlmValidationError(RuntimeError):
+    """daily_llm 输出未通过校验，不应写入缓存。"""
 
 
 class DailyLlmCache:
@@ -59,11 +65,15 @@ class DailyLlmCache:
         self,
         key: str,
         generator: Callable[[], Awaitable[str]],
+        validator: Callable[[str], None] | None = None,
     ) -> str:
         """按 key 取今日缓存值；未命中则调 generator 生成并写盘。
 
         :param key: str，变量名，作为缓存文件名前缀
         :param generator: 无参 async 函数，返回字符串值（命中时不调用）
+        :param validator: 可选校验函数，对生成值做完整性检查；不通过应抛 DailyLlmValidationError
+            （或任何异常），异常会向上抛出，对应缓存文件不会被写入。
+            命中已有缓存时不再调用校验函数。
         :return: str，今日的缓存值（命中或新生成）
         """
         async with self._get_lock(key):
@@ -80,6 +90,8 @@ class DailyLlmCache:
 
             self._purge_stale(key)
             value = await generator()
+            if validator is not None:
+                validator(value)
             try:
                 cache_path.write_text(
                     json.dumps(

@@ -92,6 +92,7 @@ def _setup_plugin_package() -> None:
         f"{_PKG}.services.action_parameter_utils",
         f"{_PKG}.services.builtin_variable_provider",
         f"{_PKG}.services.custom_variable_registry",
+        f"{_PKG}.services.llm_value_cache",
         f"{_PKG}.services.log_utils",
         f"{_PKG}.services.nai_chat_input_value_builder",
         f"{_PKG}.services.openapi_input_value_builder",

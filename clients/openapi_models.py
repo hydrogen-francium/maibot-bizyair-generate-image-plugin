@@ -14,6 +14,15 @@ class BizyAirOpenApiProtocolError(BizyAirOpenApiError):
     """BizyAir OpenAPI 返回结果与预期不符"""
 
 
+class BizyAirOpenApiContentFilterError(BizyAirOpenApiError):
+    """BizyAir OpenAPI 因内容审核被拒（HTTP 422 或 audit_status 异常）"""
+
+    def __init__(self, message: str, status_code: int | None = None, body: Any = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
 @dataclass(frozen=True)
 class BizyAirOpenApiParameterBinding:
     """OpenAPI 参数映射定义对象"""

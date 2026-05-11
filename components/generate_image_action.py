@@ -15,11 +15,13 @@ from src.plugin_system.apis import generator_api, llm_api
 from src.plugin_system.base.component_types import ActionActivationType
 from ..clients import (
     BizyAirOpenApiClient,
+    BizyAirOpenApiContentFilterError,
     NaiChatClient,
 )
 from ..services import permission_manager
 from ..services.action_parameter_utils import ActionParameterDefinition
 from ..services.builtin_variable_provider import BuiltinVariableProvider
+from ..services.content_filter_sanitizer import sanitize_input_values
 from ..services.custom_variable_registry import CustomVariableRegistry
 from ..services.log_utils import short_repr
 from ..services.nai_chat_input_value_builder import NaiChatInputValueBuilder
@@ -477,7 +479,19 @@ class GenerateImageAction(BaseAction):
                 web_app_id=provider_payload["app_id"],
                 timeout=timeout,
             )
-            generate_result = await client.generate_image(input_values=provider_payload["input_values"])
+            try:
+                generate_result = await client.generate_image(input_values=provider_payload["input_values"])
+            except BizyAirOpenApiContentFilterError as filter_err:
+                sanitized_inputs = sanitize_input_values(provider_payload["input_values"])
+                if sanitized_inputs == provider_payload["input_values"]:
+                    logger.warning(
+                        f"{self.log_prefix} 触发 422 内容审核但清洗后 input_values 未变化，放弃重试"
+                    )
+                    raise
+                logger.warning(
+                    f"{self.log_prefix} 触发 422 内容审核，剔除高危 tag 后重试一次: {filter_err}"
+                )
+                generate_result = await client.generate_image(input_values=sanitized_inputs)
 
         elif provider == "nai_chat":
             client = NaiChatClient(

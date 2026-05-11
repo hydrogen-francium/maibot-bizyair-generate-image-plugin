@@ -6,7 +6,12 @@ import httpx
 
 from src.common.logger import get_logger
 from .base import BizyAirBaseClient, BizyAirImageResult, BizyAirOpenApiOutput
-from .openapi_models import BizyAirOpenApiError, BizyAirOpenApiProtocolError, BizyAirOpenApiResponse
+from .openapi_models import (
+    BizyAirOpenApiContentFilterError,
+    BizyAirOpenApiError,
+    BizyAirOpenApiProtocolError,
+    BizyAirOpenApiResponse,
+)
 
 logger = get_logger("bizyair_generate_image_plugin")
 
@@ -75,6 +80,16 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, headers=headers) as client:
             response = await client.post(self.api_url, json=payload)
+            if response.status_code == 422:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                raise BizyAirOpenApiContentFilterError(
+                    f"OpenAPI 返回 422 内容审核失败: {body}",
+                    status_code=422,
+                    body=body,
+                )
             response.raise_for_status()
             data = response.json()
 
@@ -87,6 +102,13 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
         status = str(data.get("status", "")).strip()
         if status != self.SUCCESS_STATUS:
+            body_lower = str(data).lower()
+            if "content_filter" in body_lower or "content filter" in body_lower or "审核" in body_lower:
+                raise BizyAirOpenApiContentFilterError(
+                    f"OpenAPI 调用被内容审核拦截，status={status!r}, body={data}",
+                    status_code=None,
+                    body=data,
+                )
             raise BizyAirOpenApiError(f"OpenAPI 调用失败，status={status!r}, body={data}")
 
         request_id = self._require_protocol_text(data.get("request_id"), "request_id")

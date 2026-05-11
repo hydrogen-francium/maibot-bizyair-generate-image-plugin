@@ -522,6 +522,18 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                         "label": "回退默认值（dict、extract 模式 + use_default）",
                         "placeholder": "未命中时返回的默认值，可为空字符串",
                     },
+                    "min_length": {
+                        "type": "int",
+                        "label": "最小输出长度（仅 daily_llm 模式）",
+                        "default": 0,
+                        "description": "为 0 时不校验；>0 时要求 LLM 输出长度不少于该值，否则不写缓存并抛出错误",
+                    },
+                    "required_markers": {
+                        "type": "string",
+                        "label": "必需标记（仅 daily_llm 模式，JSON 数组）",
+                        "placeholder": '例如 ["今日：", "整体心情：", "日程时间表"]',
+                        "description": "JSON 数组字符串，每个 marker 必须出现在 LLM 输出中，否则视为不完整，不写缓存并抛出错误",
+                    },
                     "probability": {
                         "type": "float",
                         "label": "触发概率",
@@ -533,7 +545,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                     "自定义变量列表。literal 和 llm 模式会在 values/values_else 中选择模板；dict 模式会根据 source 从 JSON 对象中取值；"
                     " extract 模式会从 source 变量值中按 pattern 抽取 group 捕获组作为变量值；"
                     " daily_llm 模式与 llm 模式相同但结果按天缓存到 .var_cache/，同一天内重复访问不再调用 LLM（适合做今日日程、今日心情等日级稳定的语义注入）。"
-                    " literal/llm 支持 probability 与条件判断；dict/extract 支持 missing_behavior 与 fallback_value；daily_llm 不应配置 condition/probability，且模板内尽量不要引用动态内置变量（如 recent_chat_context_*），否则当天首次生成的旧上下文会被全天复用。"
+                    " literal/llm 支持 probability 与条件判断；dict/extract 支持 missing_behavior 与 fallback_value；daily_llm 支持 min_length / required_markers 校验，校验失败时不写缓存并抛错（用于防止 LLM 截断输出污染当天后续请求），且模板内尽量不要引用动态内置变量（如 recent_chat_context_*），否则当天首次生成的旧上下文会被全天复用。"
                     "支持引用 action_inputs 中的 {参数名}、内置变量占位符以及其他自定义变量的 {变量名}（禁止循环引用）。"
                     " 决策参数的值中同样支持引用自定义变量占位符，系统会按依赖顺序自动解析。"
                     f" 当前内置变量包括：{' '.join(BUILTIN_VARIABLE_DESCRIPTIONS)}"

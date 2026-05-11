@@ -653,11 +653,29 @@ class VariableDependencyResolver:
             return ""
 
         if definition.mode == "daily_llm":
-            from .llm_value_cache import get_daily_llm_cache
+            from .llm_value_cache import DailyLlmValidationError, get_daily_llm_cache
             cache = get_daily_llm_cache()
+            min_length = definition.min_length
+            required_markers = definition.required_markers
+            has_validation = bool(min_length or required_markers)
+
+            def _validate(value: str) -> None:
+                if min_length and len(value) < min_length:
+                    raise DailyLlmValidationError(
+                        f"daily_llm 变量 {definition.key} 的输出长度 {len(value)} 小于配置最小长度 {min_length}; "
+                        f"value={short_repr(value)}"
+                    )
+                missing = [m for m in required_markers if m not in value]
+                if missing:
+                    raise DailyLlmValidationError(
+                        f"daily_llm 变量 {definition.key} 的输出缺少必要标记 {missing!r}; "
+                        f"value={short_repr(value)}"
+                    )
+
             return await cache.get_or_generate(
                 definition.key,
                 lambda: llm_value_factory(selected_value),
+                validator=_validate if has_validation else None,
             )
 
         return await llm_value_factory(selected_value)

@@ -1,0 +1,416 @@
+# bizyair_generate_image_plugin - 软硬流程平衡版
+# 决策器只填一个 image_intent；中间由 director（LLM）输出结构化决策标签 + 自由文本片段；
+# extract 拆字段；dict 翻译枚举为高质量英文 tag；LLM 翻译自由文本；最后按 scene_type 路由组装。
+
+# ============================================================
+# BizyAir 接口连接配置
+# ============================================================
+[bizyair_client]
+
+bearer_token = ""  # 必填：在 https://bizyair.cn 控制台获取
+openapi_url = "https://api.bizyair.cn/w/v1/webapp/task/openapi/create"
+timeout = 180
+
+# --- 两个 BizyAir App 预设，default 走 NanoBanana，空白的GPT 走 GPT_IMAGE_2 ---
+[[bizyair_client.app_presets]]
+preset_name = "default"
+app_id = 50835
+description = "默认 BizyAir App（NanoBanana）"
+
+[[bizyair_client.app_presets]]
+preset_name = "空白的GPT"
+app_id = 52500
+description = "GPT bizyair 官"
+
+[[bizyair_client.app_presets]]
+preset_name = "空白的便宜GPT文生图"
+app_id = 53628
+description = "空白酱说随便蹬"
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "default"
+field = "18:BizyAir_NanoBananaProOfficial.prompt"
+value_type = "string"
+value = "{final_prompt}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "default"
+field = "18:BizyAir_NanoBananaProOfficial.aspect_ratio"
+value_type = "string"
+value = "{aspect_ratio}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "default"
+field = "18:BizyAir_NanoBananaProOfficial.resolution"
+value_type = "string"
+value = "{resolution}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的GPT"
+field = "24:BizyAir_GPT_IMAGE_2_Official_T2I_API.prompt"
+value_type = "string"
+value = "{final_prompt}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的GPT"
+field = "24:BizyAir_GPT_IMAGE_2_Official_T2I_API.aspect_ratio"
+value_type = "string"
+value = "{aspect_ratio_gpt}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的GPT"
+field = "24:BizyAir_GPT_IMAGE_2_Official_T2I_API.resolution"
+value_type = "string"
+value = "{resolution_gpt}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的GPT"
+field = "24:BizyAir_GPT_IMAGE_2_Official_T2I_API.quality"
+value_type = "string"
+value = "low"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的便宜GPT文生图"
+field = "17:BizyAir_GPT_IMAGE_2_T2I_API.prompt"
+value_type = "string"
+value = "{final_prompt}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的便宜GPT文生图"
+field = "17:BizyAir_GPT_IMAGE_2_T2I_API.aspect_ratio"
+value_type = "string"
+value = "{aspect_ratio_gpt}"
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "空白的便宜GPT文生图"
+field = "17:BizyAir_GPT_IMAGE_2_T2I_API.resolution"
+value_type = "string"
+value = "{resolution_gpt}"
+
+[nai_chat_client]
+timeout = 180
+
+[[nai_chat_client.presets]]
+preset_name = "nai_default"
+description = "默认 NAI Chat 预设（未使用）"
+base_url = "https://your-domain.example.com/v1"
+api_key = ""
+model = "nai-diffusion-4-5-full-anlas-0"
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_default"
+field = "prompt"
+value_type = "string"
+value = "{final_prompt}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_default"
+field = "size"
+value_type = "json"
+value = "[832, 1216]"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_default"
+field = "steps"
+value_type = "int"
+value = "23"
+
+[bizyair_generate_image_plugin]
+
+action_enabled = true
+active_preset = "空白的GPT"
+send_text_before_image = false
+text_before_image = "我给你生成了一张图片"
+enable_rewrite_failure_reply = true
+enable_splitter = false
+
+# --- 决策器只需填一个意图字段 ---
+action_require = "该 action 给了你画画的能力。下游有一条 LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【触发原则（重要！默认是不画）】\n画图是高成本动作，**默认应保持克制**。不确定要不要画时一律不要触发，宁可少画也不要多画。只在下面任一硬条件成立时才允许使用：\n1. 用户在最近 1 条消息里**明确**要求画图（出现「画」「来一张」「生成图片」「出图」「给我画」「发张图」「画一张」等明确动词；模糊的「这个画面好棒」「想象一下」不算）\n2. 用户在最近 1 条消息里**直接、详细**地给出了图片描述（角色/场景/动作/构图至少 2 项明确指定），并表现出期待得到一张图\n3. 自发画图必须**同时满足**以下全部条件才允许（缺一不可）：\n   a. 当前氛围/情绪/情境强烈到「画一张比说一句更合适」\n   b. 最近 20 条聊天记录里没有出现过 generate_image 动作（**严格冷却**，不允许密集出图）\n   c. 上一条画图没有连续紧挨着这条触发（避免连发）\n   d. 你当下确实有清晰具体的画面想法（不是「我应该画点啥」这种空白冲动）\n\n【明确禁止】\n- 闲聊中临时被夸/被吐槽就触发自拍 → **不允许**\n- 上一轮已经画过就再画一张「换个角度的」「换个情绪的」 → **不允许**\n- 没有具体画面只是「想画点东西」 → **不允许**\n- 用户只是讨论或欣赏一个画面但没要求出图 → **不允许**\n- 把画图当成 emoji/表情替代 → **不允许**\n\n如果聊天记录中显示最近 20 条内已经使用过该动作，则**绝对不允许**再次使用。\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「氢刚说我傲娇，我要画张自己气鼓鼓的自拍喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
+[[bizyair_generate_image_plugin.action_parameters]]
+name = "image_intent"
+description = "必填，一句自然语言描述你想生成什么样的画面。把当下脑子里冒出的画面想法用一句话说出来即可，例：「氢刚才说我傲娇，我要画一张自己气鼓鼓的自拍喵」「画一只蹲在窗台上看月亮的小猫」「钠半夜被氢突然夸了一句，害羞得抓着马尾发呆的自拍」。后续会自动由「导演」LLM 结合最近聊天上下文展开为结构化决策。"
+required = "必填"
+missing_behavior = "raise_error"
+
+[[bizyair_generate_image_plugin.action_parameters]]
+name = "aspect_ratio"
+description = "可选，图片宽高比。若传入则必须为 1:1、4:3、16:9、9:16、auto 中的一个。默认 1:1。"
+required = "选填"
+default_value = "1:1"
+missing_behavior = "use_default"
+
+[[bizyair_generate_image_plugin.action_parameters]]
+name = "resolution"
+description = "可选，图片分辨率。若传入则必须为 1K、2K、4K、auto 中的一个（大写 K）。默认 2K。"
+required = "选填"
+default_value = "2K"
+missing_behavior = "use_default"
+
+[permission_control]
+command_user_list_mode = "whitelist"
+command_user_list = ["1273659484"]
+action_user_list_mode = "blacklist"
+action_user_list = []
+global_blacklist = []
+
+# ============================================================
+# 自定义变量（核心管线）
+# ============================================================
+
+[custom_variables_config]
+
+# --- Layer 0: 按天缓存的「今日状态」与常去地点池（给 director / english_bg / english_extra 提供背景） ---
+[[custom_variables_config.custom_variables]]
+key = "today_state"
+mode = "daily_llm"
+probability = 1
+min_length = 200
+required_markers = [
+    "今日：",
+    "整体心情：",
+    "日程时间表",
+]
+values = "[\"你是钠（Natrium）的「日程发生器」。基于钠的人设和今天的日期，输出一份「今日状态卡片」，作为后续画面决策的背景输入（不直接用于出图）。\\n\\n## 钠的人设\\n- 16 岁猫娘天才科学家，借住在地球人氢家中担任助手\\n- 茶褐色头发低马尾，黄色眼睛，茶褐色猫耳，茶褐色猫尾，体型纤细娇小\\n- 性格傲娇高冷，懒散宅，爱看动漫和打游戏，对氢有好感（傲娇模式）\\n- 默认居家穿搭：黑色运动短裤+粉白色圆领睡衣\\n\\n## 今日日期\\n{current_datetime}\\n\\n## 输出格式（严格，逐行输出，不要 markdown，不要任何前后缀）\\n今日：YYYY-MM-DD 周X（{current_datetime} 的日期 + 星期）\\n整体心情：<一两个中文形容词，例：微燥带甜 / 慵懒平静 / 元气满满>\\n日程时间表（24h）：\\nHH:MM-HH:MM <地点> <一句活动>\\nHH:MM-HH:MM <地点> <一句活动>\\n...\\n\\n## 时间表生成规则\\n- 共 6-10 行时间段，每行格式：HH:MM-HH:MM <地点> <一句话活动描述>\\n- 起始 00:00，结束 24:00，每段结束时间 = 下一段起始时间，全天无缝衔接，不允许任何空档\\n- 必须包含睡觉时段（一般 23:00 之后到次日 06:00-10:00）\\n- 必须包含三餐时段：早餐 06:00-09:30 / 午餐 11:00-14:00 / 晚餐 17:00-20:00\\n- 周末（周六/日）允许赖床到 10:00；工作日 07:30 前起\\n- 每个时段地点必须是 1 个具体地点（不写「公园+客厅」这种），从池中挑或合理扩展：自己的房间 / 客厅 / 厨房 / 阳台 / 浴室 / 楼下便利店 / 附近咖啡馆 / 附近公园 / 实验室 / 书店\\n- 活动描述贴合钠的人设（追番、打游戏、嘟嘴吃布丁、跟氢拌嘴、试射小型科研装置等）\\n\\n## 示例（仅示意格式，禁止直接复用）\\n今日：2026-05-03 周日\\n整体心情：微燥带甜\\n日程时间表（24h）：\\n00:00-10:00 自己的房间 蜷在被窝里追完新番再赖床\\n10:00-11:00 厨房 翻冰箱凑了顿迟来的早午餐\\n11:00-13:00 楼下便利店 跟氢出门买限定布丁顺路买零食\\n13:00-15:00 附近公园 树荫下试射迷你离子炮顺便摸鱼\\n15:00-18:00 客厅 窝在地毯上打 Boss 卡关炸毛\\n18:00-19:00 厨房 蹭氢做的咖喱尾巴拍地催饭\\n19:00-23:00 自己的房间 看动漫吃布丁顺便骂队友\\n23:00-24:00 浴室 冲澡换睡衣准备睡觉\\n\\n## 输出（直接以「今日：」开头）\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "location_pool"
+mode = "literal"
+probability = 1
+values = "[\"自己的房间（书桌、动漫海报、毛绒玩具）/ 客厅（沙发、电视、茶几）/ 厨房 / 阳台 / 家附近的便利店 / 附近的咖啡馆 / 附近的公园 / 实验室 / 书店\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "director"
+mode = "llm"
+probability = 1
+values = "[\"你是生图工作流中的「导演」。根据决策器传来的自然语言意图、最近聊天上下文和「钠的今日状态」，输出一组结构化决策标签和一段自由发挥的画面描述，供下游模块组装最终生图提示词。\\n\\n## 主角背景（仅当画面包含主角「钠」时使用）\\n钠（Natrium），猫娘天才科学家：\\n- 茶褐色头发松垮地扎着低马尾\\n- 黄色眼睛\\n- 茶褐色猫耳和猫尾\\n- 体型纤细娇小\\n- 居家穿黑色运动短裤+粉白色圆领睡衣\\n- 性格傲娇高冷，对住一起的氢有好感，遇到笨蛋会内心吐槽\\n\\n## 输出格式（严格遵守，每行一项 KEY: value，全部使用半角冒号；不要 Markdown 代码块；不要任何前后缀）\\nSCENE_TYPE: <selfie 或 normal>\\nSTYLE_HINT: <anime|realistic|sketchy 三选一>\\nEMOTION: <从下方 25 个池中选 1 个，或自定义英文小写词；池：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/smirk/embarrassed/focused>\\nPOSE: <phone_in_hand|front_of_mirror|bed_lying|bathroom_mirror|window_side|selfie_stick_wide 中 6 选 1>\\nOUTFIT_BRIEF: <10 字内中文穿搭描述，仅 selfie 必填，否则填 default>\\nFREE_PROMPT: <一句中文自然语言画面描述>\\n\\n## 字段规则\\n- SCENE_TYPE：意图含「自拍/拍我/发张自拍/给我拍照」等明确自拍信号 → selfie；其它一律 normal\\n- STYLE_HINT：仅 normal 路径生效（selfie 路径走固定动漫风，填什么都不影响）。三选一：anime（动漫/二次元/插画/角色梗/Q 版/拟人/猫娘场景）、realistic（写实摄影/真人写真/物品照片/动植物/纪实场景）、sketchy（清淡手绘/水彩/简笔卡通/插画感、不强调细节真实）。意图含「写真/照片/拍/真实/纪实/物品摄影」选 realistic；含「卡通/简笔/水彩/手绘/插画感」选 sketchy；其它默认 anime\\n- EMOTION：必填。**优先**从池内 25 个挑（命中走 dict，无额外 LLM 调用）：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/smirk/embarrassed/focused。如果池内没有完全合适的，**允许**输出一个自定义英文小写词（不超过 10 字符，例：grumpy/bashful/yandere/sulky），系统会现场调 LLM 翻译成英文表情 tag。映射参考：傲娇炸毛→pout/mischief/annoyed；害羞→shy/embarrassed；放松→chill/peace/soft；开心→joy/playful/excited；困倦→sleepy；得意→proud/smirk/wink；呆萌→cute；冷酷→cool；做梦→dreamy；柔软→tender/soft；优雅→glam；活力→energetic；惊讶→surprised；委屈→teary；专注/认真→thoughtful/focused\\n- POSE：仅 selfie 必填，按场景挑构图；**对比当前时间 {current_datetime} 和 today_state 的时间表**，找到当下时段对应的地点再选构图（家里房间→front_of_mirror/bed_lying；客厅/厨房/阳台→phone_in_hand；外出便利店/公园/咖啡馆→phone_in_hand/selfie_stick_wide；浴室→bathroom_mirror；窗边→window_side）；非自拍场景填 phone_in_hand 占位\\n  - phone_in_hand：手持手机直接拍（默认，胸像/特写、户外、紧凑空间）\\n  - front_of_mirror：站镜子前自拍（半身/全身、房间内）\\n  - bed_lying：躺床上仰角自拍（私密放松、卧室、低角度）\\n  - bathroom_mirror：浴室镜子自拍（家居场景、卫生间）\\n  - window_side：窗边逆光自拍（氛围感、自然光、半身）\\n  - selfie_stick_wide：自拍杆远景（户外、全身、风景背景）\\n- OUTFIT_BRIEF：仅 selfie 必填，根据 today_state 时间表当下时段的活动 + 场景情绪决定，例：在家随意→「黑短裤+粉白睡衣」；外出约人→「白色连衣裙」；运动/活力场景→「红色卫衣+牛仔裤」；非自拍场景填 default；**只描述衣服本身，不要写动作/手势/手部状态**\\n- FREE_PROMPT：**必填且不能为空**，至少一句完整的中文画面描述（最短 8 字，鼓励 20 字以上让画面更有信息量）。漏写或空值会让整条生图流水线退化到决策器的原始意图，导致下游模块拿不到导演的细化结果\\n  - selfie 时：聚焦钠当下的**情境/动作/小细节/视线/氛围**，结合今日状态融入地点活动。请大胆写具体一点：在做什么、看哪里、被什么触动、附近有什么、空气里有什么、身边有谁/有什么物品。**只描述钠当下的状态与画面氛围**，不要描述外貌（人设已固定）、不要描述构图（pose 已固定）、**不要描述手势/手部位置**（手部已由 pose 模板锁定）。例：「在咖啡馆窗边发呆，桌上摆着没吃完的草莓蛋糕，午后阳光斜斜落在脸上」「半夜被氢突然夸了一句脸瞬间通红，正想回嘴又卡住，眼神飘开」「公园长椅上叼着冰棒翘着腿，旁边一只野猫凑过来嗅尾巴」\\n  - normal 时：完整描述画面；如果画的是钠请明说「画钠」，如果画其它（角色、风景、动物、物体）请明确主体\\n\\n## 当前时间（用来对照 today_state 时间表选地点 / 构图 / 穿搭）\\n{current_datetime}\\n\\n## 钠的今日状态参考（含时间表，请融入决策让画面有连贯日常感）\\n{today_state}\\n\\n## 输入\\n意图：{image_intent}\\n\\n聊天上下文（最近 30 条）：\\n{recent_chat_context_30}\\n\\n## 输出（直接以 SCENE_TYPE 开头）\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "scene_type"
+mode = "extract"
+source = "director"
+pattern = "SCENE_TYPE[:：]\\s*(\\S+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "normal"
+
+[[custom_variables_config.custom_variables]]
+key = "emotion_key"
+mode = "extract"
+source = "director"
+pattern = "EMOTION[:：]\\s*(\\S+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "peace"
+
+[[custom_variables_config.custom_variables]]
+key = "pose_key"
+mode = "extract"
+source = "director"
+pattern = "POSE[:：]\\s*(\\S+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "phone_in_hand"
+
+[[custom_variables_config.custom_variables]]
+key = "outfit_brief"
+mode = "extract"
+source = "director"
+pattern = "OUTFIT_BRIEF[:：]\\s*(.+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "default"
+
+[[custom_variables_config.custom_variables]]
+key = "free_prompt"
+mode = "extract"
+source = "director"
+pattern = "FREE_PROMPT[:：]\\s*(.+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "{image_intent}"
+
+[[custom_variables_config.custom_variables]]
+key = "emotion_dict"
+mode = "dict"
+source = "emotion_key"
+values = "{\"joy\": \"sparkling anime eyes, big cheerful smile\", \"cute\": \"tilted head, slightly puffed cheeks, sweet innocent gaze, soft round eyes\", \"cool\": \"anime eyes hidden behind cool sunglasses, calm composed expression\", \"mischief\": \"sly cat-like eyes, teasing fanged grin\", \"pout\": \"puffed cheeks, looking away slightly, slight blush, tsundere expression\", \"peace\": \"soft gentle smile, half-closed eyes\", \"sleepy\": \"droopy heavy-lidded eyes, small open mouth\", \"shy\": \"averted gaze, flushed cheeks, lip bite, drooping cat ears\", \"proud\": \"upturned chin, confident sparkling eyes, perked up cat ears\", \"surprised\": \"wide starry eyes, small o-shaped mouth\", \"wink\": \"one eye closed, cheerful bright smile, playful eyebrow raise\", \"tender\": \"warm soft eyes, gentle content smile\", \"energetic\": \"beaming grin, excited sparkling pupils\", \"chill\": \"lazy relaxed eyes, easygoing small smile\", \"dreamy\": \"unfocused distant gaze, wistful soft expression\", \"playful\": \"energetic sparkling eyes, lively open-mouthed smile, raised playful brows\", \"glam\": \"composed elegant smile, refined sharp eyes\", \"soft\": \"gentle warm eyes, relaxed peaceful smile\", \"teary\": \"watery teary eyes, quivering lips, holding back tears, wronged tsundere expression\", \"annoyed\": \"furrowed brows, slight frown, irritated narrow eyes, twitching cat ears\", \"excited\": \"wide bright sparkling eyes, open-mouthed grin, flushed excited cheeks, perked up cat ears\", \"thoughtful\": \"narrowed pondering eyes, lips pressed together, slight head tilt, focused contemplative gaze\", \"smirk\": \"smug crooked smirk, half-lidded knowing eyes, raised eyebrow, playful grin\", \"embarrassed\": \"deep red blush across cheeks, embarrassed averted eyes, biting lower lip, flustered expression\", \"focused\": \"intent narrowed eyes, serious closed mouth, undistracted concentrated gaze\"}"
+missing_behavior = "use_default"
+fallback_value = "soft gentle smile, calm composed expression"
+
+[[custom_variables_config.custom_variables]]
+key = "emotion_in_pool"
+mode = "literal"
+probability = 1
+condition_type = "regex_match"
+condition_source = "emotion_key"
+condition_value = "^(joy|cute|cool|mischief|pout|peace|sleepy|shy|proud|surprised|wink|tender|energetic|chill|dreamy|playful|glam|soft|teary|annoyed|excited|thoughtful|smirk|embarrassed|focused)$"
+use_raw_condition_value = true
+values = "[\"yes\"]"
+values_else = "[\"no\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "emotion_dynamic"
+mode = "llm"
+probability = 1
+values = "[\"你是 Danbooru 风格英文表情 tag 翻译器。把下面的中文/英文情绪描述词翻译成 1-3 个简短的英文 tag，描述眼神、嘴形、面部细节、神态。\\n\\n## 规则\\n- 输出英文逗号分隔的 tag，不超过 5 个\\n- 只描述眼神、嘴形、面颊、眉毛、猫耳等**纯面部细节和神态**，**绝对不要描述任何手部、手指、手臂动作或身体姿势**（手部和姿态由其它模块统一负责，emotion 只管脸）\\n- 不要任何性暗示或暴露元素\\n- 适配 16 岁猫娘人设（傲娇高冷向，可包含 cat ears 相关微动作如 ears drooping / twitching ears 等）\\n- 直接输出 tag，不要解释\\n\\n## 输入\\n{emotion_key}\\n\\n## 输出\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "emotion_prompt"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "emotion_in_pool"
+condition_value = "yes"
+values = "[\"{emotion_dict}\"]"
+values_else = "[\"{emotion_dynamic}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "pose_prompt"
+mode = "dict"
+source = "pose_key"
+values = "{\"phone_in_hand\": \"close-up upper body selfie, high-angle front-facing phone camera, naturally bent elbow holding the phone close to the face, the arm holding the phone is completely outside the frame, no phone visible in the image, the other hand and arm are visible in a natural relaxed gesture near the face or chest, exactly one visible hand in the frame, authentic casual selfie composition, unposed natural aesthetic\", \"front_of_mirror\": \"mirror selfie photo, reflection only, no person outside mirror, phone back visible in reflection, frame edge cut off, mirror filling most of frame\", \"bed_lying\": \"selfie photo lying on bed, looking up at camera, low angle from below, hair spreading on pillow, relaxed intimate close-up, soft pillow texture, the arm holding the phone is completely outside the frame, no phone visible in the image, the other hand resting naturally near the head or pillow, exactly one visible hand in the frame\", \"bathroom_mirror\": \"bathroom mirror selfie, reflection in mirror, tiled wall background, sink and faucet visible, bright bathroom lighting, casual home setting\", \"window_side\": \"selfie photo by window, natural backlight, golden hour lighting, half body shot, soft window light, contrasting shadows, the arm holding the phone is completely outside the frame, no phone visible in the image, the other hand in a natural relaxed gesture, exactly one visible hand in the frame\", \"selfie_stick_wide\": \"wide-angle full body selfie photo, slight high-angle perspective, the phone or selfie stick and the holding arm are completely outside the frame, no phone or selfie stick visible in the image, the other hand free and visible in a relaxed natural pose, exactly one visible hand in the frame, distant scenic background, casual environmental composition\"}"
+missing_behavior = "use_default"
+fallback_value = "selfie photo, casual selfie angle"
+
+[[custom_variables_config.custom_variables]]
+key = "english_outfit"
+mode = "llm"
+probability = 1
+values = "[\"你是生图工作流的「服装翻译器」。请把下面的中文穿搭描述变成英文 Danbooru tag。\\n\\n## 规则\\n- 输出英文逗号分隔的 tag，只描述衣物\\n- 不要画风、不要表情、不要场景、不要构图\\n- **绝对禁止**描述任何手部/手指/手臂的状态或位置（不写 hands in pockets / hands holding clothing / arms crossed / sleeves rolled up / fingers gripping fabric 这类，手部由 pose_prompt 统一管控）\\n- 如果输入是 default 或为空，输出钠的默认居家：black sport shorts, pink and white round-neck pajama top\\n- 直接输出 tag，不要解释\\n\\n## 画面尺度\\n- 轻量暴露穿着可以使用（bikini / swimsuit / lingerie / underwear / bare shoulders / off-shoulder / casual cleavage / midriff / short shorts 等都可以保留）\\n- 但避免明确露骨 tag（不写 nude / fully naked / exposed nipples / pussy 等直接性暗示词）\\n\\n## 输入\\n{outfit_brief}\\n\\n## 输出\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "english_bg"
+mode = "llm"
+probability = 1
+values = "[\"你是生图工作流的「背景生成器」。根据当前自拍构图代号、钠的今日状态时间表、当前时间以及画面意图，推断当下应该出现的地点，生成英文背景环境 tag（场景、光线、氛围）。\\n\\n## 规则\\n- 输出英文逗号分隔的 tag，只描述背景环境\\n- 不要重复构图本身（不写 selfie、mirror、phone 这种）\\n- 不要画风、不要人物动作、不要表情、不要镜头\\n- **绝对禁止**描述任何人物的手部、手指、手臂（背景生成器只管场景、光线、氛围；手部由 pose_prompt 全权管控）\\n- 不要任何性暗示元素\\n- 简洁，不超过 8 个 tag\\n\\n## 选地点的优先级\\n1. **看 free_prompt 是否明确指定了地点**（如「在咖啡馆」「公园里」「窗边」），优先按 free_prompt\\n2. 否则**对比当前时间 {current_datetime} 与 today_state 时间表**，找到当下时段对应的地点\\n3. 如果时间表那一段地点与构图代号明显不匹配（例如时间表说在公园但构图是 bathroom_mirror），改按构图代号合理推断\\n4. 都不合适再从地点池里挑\\n\\n## 当前构图代号\\n{pose_key}\\n\\n## 当前时间\\n{current_datetime}\\n\\n## 钠的今日状态（含时间表）\\n{today_state}\\n\\n## 钠常去的地点池\\n{location_pool}\\n\\n## 当前画面意图（用于地点指定优先判断）\\n{free_prompt}\\n\\n## 构图与背景搭配建议\\n- phone_in_hand：简洁日常环境（房间一角、街道一隅、咖啡馆等）\\n- front_of_mirror：卧室或更衣室（衣柜、镜框、暖灯）\\n- bed_lying：卧室床铺（柔软枕头、被子褶皱、床头灯）\\n- bathroom_mirror：现代浴室（瓷砖墙、洗手台、镜面、亮光）\\n- window_side：窗边光景（窗框、窗外天空/街景、自然光斜射）\\n- selfie_stick_wide：户外远景（公园、海边、山顶、街景）\\n\\n## 输出\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "english_extra"
+mode = "llm"
+probability = 1
+values = "[\"你是生图工作流的「灵感翻译器」（自拍场景专用）。请把下面的中文画面意图扩写成 4-8 个 Danbooru 风格英文 tag，让画面真正接住用户的灵感（场景互动、身体语言、小道具、氛围细节、情境暗示、视线方向、轻微姿态变化都欢迎）。\\n\\n## 规则\\n- 输出英文逗号分隔的 tag，**总数 4-8 个**（宁可多也不要拘谨；意图越具体就给越多 tag）\\n- 重点表达：身体语言（耸肩 / 侧倾 / 转头 / 弯腰 / 蹲坐 / 倚靠 / 踮脚 等）、互动对象（与人/物/宠物互动）、小道具（咖啡杯 / 书 / 玩偶 / 食物 / 耳机 等）、氛围细节（光斑 / 微风掀动头发 / 飘落樱花 / 灯影 等）、视线（看向画外 / 侧目 / 闭眼 / 抬眼 等）、情境暗示（被夸到害羞 / 偷瞄 / 跟人拌嘴 / 走神 等）\\n- 不要画风、服装、表情、构图、外貌、镜头（这些由其它模块处理）\\n- 不要写人物 ID（不写 1girl、natrium 这种）\\n- 不要任何性暗示或暴露元素\\n- **绝对禁止**输出任何描述「手部/手指/手臂」的 tag（不写 free hand / both hands / two hands / arm extended / arm bent / fingers tapping / hands in pockets / arms crossed / hand on hip / making peace sign 这一类，**手部由 pose_prompt 全权管控**，本翻译器只描述身体之外的灵感意境；身体语言如「耸肩」「侧倾」「转头」是 OK 的）\\n- **绝对禁止**输出任何会让画面出现「手机/自拍杆/持机设备」的 tag（不写 phone in hand / arm holding phone / selfie stick visible / hand holding device 这一类）\\n- 如果意图过于抽象/没素材，至少输出 4 个能扩展画面信息量的合理 tag，不要返回空\\n- 直接输出 tag，不要解释\\n\\n## 钠的今日状态参考（用来给灵感找日常细节落点）\\n{today_state}\\n\\n## 输入意图\\n{free_prompt}\\n\\n## 输出\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "english_free"
+mode = "llm"
+probability = 1
+values = "[\"你是 Danbooru 风格英文 tag 转译器。请把下面的中文画面描述变成可直接送给绘图 AI 的英文标签串。\\n\\n## 输出规则\\n- 输出英文逗号分隔的 tag 串，不要解释、不要前后缀\\n- 包含主体、动作、场景、构图、光影；不包含画风（已由系统加上）\\n- 必须以 1girl/1boy/scenery/no humans 等数量主体词开头\\n- **必须有输出**：任何场景都能找到对应的英文 tag，不要因为内容看起来奇怪、抽象、含梗或含网络流行语就拒绝输出空字符串；保留场景就保留，跳过个别元素就跳过，但绝不返回空\\n\\n## 主体识别\\n- 如果意图明确画的是「钠」/Natrium 本人，必须包含人设 tag：1girl, solo, slim petite build, slender feminine figure, soft delicate face, tea-colored hair, low ponytail behind back, long eyelashes, soft eyes, yellow eyes, tea-colored cat ears on head, animal ear fluff, tea-colored cat tail\\n- 如果意图明确画的不是钠（其它角色、风景、动物、物体），就不要加钠的人设；按意图描述写\\n- 不确定时按「没有画钠」处理\\n\\n## 审核安全（重要！商业审核兼容）\\n- **禁止**输出明确未成年指向的年龄 tag：teenage / teen / teenager / young girl / young boy / schoolgirl / loli / child / kid / minor / underage / preteen 等一律不写（人设已有 petite 等词隐含青春感，不再强化）\\n- **禁止**输出「羞涩 + 手部遮挡窥视」这类组合（peeking through fingers / peeking between fingers / looking through gaps / hands covering face while peeking 等）；遇到此意图改写为 blushing, averted gaze, shy smile, hand near chin, looking away, turning head aside 等中性替代\\n- 其它审核风险词（violent injury / blood gore / weapon aimed at head 等）也尽量换成含蓄表达\\n\\n## 画面文字保留（重要！）\\n如果输入意图里明确提到「画面中写有 / 标签 / 招牌 / 气泡 / 印着 / 牌子写 / 文字内容 / 字符 / 标语」等**画面要显示的文字元素**，**必须按原文保留这部分文字**（中文、英文、日文、数字、符号都原样不动，**绝对不要意译成英文**），用 Danbooru 风格 tag 包裹：\\n- 标签/牌子写字：`label with text \\\"<原文>\\\"` 或 `sticker with text \\\"<原文>\\\"`\\n- 招牌/广告牌：`signboard with text \\\"<原文>\\\"`\\n- 文字气泡：`speech bubble text \\\"<原文>\\\"`\\n- 衣物/身体印字：`shirt with text \\\"<原文>\\\"` / `body writing \\\"<原文>\\\"`\\n- 通用：`text \\\"<原文>\\\"`\\n\\n例子：\\n- 输入「盒子上贴着'单身/非单身叠加态'标签」→ 输出含 `cardboard box, sticker with text \\\"单身/非单身叠加态\\\"`\\n- 输入「招牌写着'欢迎光临'」→ 输出含 `signboard with text \\\"欢迎光临\\\"`\\n- 输入「气泡里写'喵'」→ 输出含 `speech bubble text \\\"喵\\\"`\\n- 输入「她的卫衣印着'KEEP CALM'」→ 输出含 `hoodie with text \\\"KEEP CALM\\\"`\\n\\n注意：这条规则只适用于「画面里要显示的字」。**场景本身的中文描述**（“在咖啡馆”、“看着月亮”等）仍然照常翻译成英文 tag，不要保留中文。\\n\\n## 画面尺度\\n- 轻量暴露 tag 可以使用（bare shoulders / midriff / bikini / swimsuit / lingerie / underwear / casual cleavage / off-shoulder / short shorts 等都可以保留）\\n- 但避免明确露骨 tag（不写 nude / fully naked / exposed nipples / pussy / explicit sexual / sex / penis 等直接性暗示词）\\n- 输入意图若含相关描述就照翻，不必强行得体化\\n\\n## 输入意图\\n{free_prompt}\\n\\n## 输出（直接以 tag 开头，禁止返回空字符串）\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "character_base"
+mode = "literal"
+probability = 1
+values = "[\"1girl, solo, slim petite build, slender feminine figure, soft delicate face, tea-colored hair, medium-length hair, low ponytail behind back, long eyelashes, soft eyes, yellow eyes, tea-colored cat ears on head, animal ear fluff, tea-colored cat tail\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "style_base"
+mode = "literal"
+probability = 1
+values = "[\"masterpiece, best quality, ultra-detailed, digital illustration, pixiv style, anime aesthetic, vibrant color palette, clean lineart, soft cel shading, volumetric lighting, cinematic atmosphere, sharp focus, high-resolution 2D art, refined brushwork, colorful glow, intricate details\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "style_realistic"
+mode = "literal"
+probability = 1
+values = "[\"masterpiece, best quality, photorealistic, hyper-realistic, RAW photo, professional photography, cinematic lighting, ray tracing, global illumination, realistic textures, subsurface scattering, shallow depth of field, sharp focus, film grain, high dynamic range, optical lens flare\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "style_sketchy"
+mode = "literal"
+probability = 1
+values = "[\"anime screencap aesthetic, painterly cel shade, rich color harmony, expressive brushstroke lines, depth-filled eye rendering, modern anime production art, polished commercial illustration\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "style_hint"
+mode = "extract"
+source = "director"
+pattern = "STYLE_HINT[:：]\\s*(\\S+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "anime"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_style_pre"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "style_hint"
+condition_value = "realistic"
+use_raw_condition_value = true
+values = "[\"{style_realistic}\"]"
+values_else = "[\"{style_base}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_style"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "style_hint"
+condition_value = "sketchy"
+use_raw_condition_value = true
+values = "[\"{style_sketchy}\"]"
+values_else = "[\"{normal_style_pre}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "hand_discipline"
+mode = "literal"
+probability = 1
+values = "[\"anatomically perfect hand, exactly one visible hand in the frame, only one hand and one arm visible, clean five-finger anatomy, no extra hands, no extra fingers, no duplicate arms, no mutated limbs, no floating disembodied hands\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "selfie_assembly"
+mode = "literal"
+probability = 1
+values = "[\"{style_base}, {pose_prompt}, {character_base}, {emotion_prompt}, {english_outfit}, {english_bg}, {english_extra}, {hand_discipline}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_assembly"
+mode = "literal"
+probability = 1
+condition_type = "length_gt"
+condition_source = "english_free"
+condition_value = "0"
+use_raw_condition_value = true
+values = "[\"{normal_style}, {english_free}, {normal_subject_guard}\"]"
+values_else = "[\"{normal_style}, {free_prompt}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_subject_guard"
+mode = "literal"
+probability = 1
+values = "[\"strict subject fidelity, preserve the requested subject exactly, do not transform unrelated characters into Natrium, do not add cat ears, animal ears, cat tail, animal tail, nekomimi, cat girl, or animal ear fluff unless the user explicitly requested those traits, for existing characters such as Leon S. Kennedy preserve their canonical human design\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "final_prompt"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "scene_type"
+condition_value = "selfie"
+values = "[\"{selfie_assembly}\"]"
+values_else = "[\"{normal_assembly}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "resolution_gpt"
+mode = "dict"
+source = "resolution"
+values = "{\"1K\": \"1k\", \"2K\": \"1k\", \"4K\": \"1k\", \"auto\": \"auto\"}"
+missing_behavior = "use_default"
+fallback_value = "1k"
+
+[[custom_variables_config.custom_variables]]
+key = "aspect_ratio_gpt"
+mode = "dict"
+source = "aspect_ratio"
+values = "{\"1:1\": \"1:1\", \"4:3\": \"3:2\", \"16:9\": \"3:2\", \"9:16\": \"2:3\", \"auto\": \"auto\"}"
+missing_behavior = "use_default"
+fallback_value = "1:1"
+
+[variable_llm_config]
+llm_group = "lpmm_entity_extract"
+llm_list = []
+max_tokens = 20000
+temperature = 1
+slow_threshold = 90
+selection_strategy = "balance"
+
+[plugin]
+enabled = false

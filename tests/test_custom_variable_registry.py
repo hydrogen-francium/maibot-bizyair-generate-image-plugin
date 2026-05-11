@@ -168,6 +168,244 @@ class TestParseVariableDefinitions:
             _make_registry(raw_variables=raw, action_parameter_names={"emotion"})
 
 
+class TestExtractMode:
+    def test_extract_mode_parses_pattern_and_group(self):
+        raw = [
+            {
+                "key": "scene_type",
+                "mode": "extract",
+                "source": "director",
+                "pattern": r"SCENE_TYPE[:：]\s*(\S+)",
+                "group": 1,
+                "missing_behavior": "use_default",
+                "fallback_value": "normal",
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        definition = registry.variable_definitions["scene_type"]
+        assert definition.mode == "extract"
+        assert definition.source == "director"
+        assert definition.pattern == r"SCENE_TYPE[:：]\s*(\S+)"
+        assert definition.group == 1
+        assert definition.missing_behavior == "use_default"
+        assert definition.fallback_value == "normal"
+        assert definition.values == []
+
+    def test_extract_mode_default_group_is_one(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+                "pattern": r"(\S+)",
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        assert registry.variable_definitions["v"].group == 1
+
+    def test_extract_mode_supports_group_zero(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+                "pattern": r"\S+",
+                "group": 0,
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        assert registry.variable_definitions["v"].group == 0
+
+    def test_extract_mode_missing_pattern_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+            }
+        ]
+        with pytest.raises(ValueError, match="pattern 不能为空"):
+            _make_registry(raw_variables=raw)
+
+    def test_extract_mode_missing_source_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "pattern": r"(\S+)",
+            }
+        ]
+        with pytest.raises(ValueError, match="source 不能为空"):
+            _make_registry(raw_variables=raw)
+
+    def test_extract_mode_invalid_regex_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+                "pattern": r"(unclosed",
+            }
+        ]
+        with pytest.raises(ValueError, match="不是合法的正则"):
+            _make_registry(raw_variables=raw)
+
+    def test_extract_mode_negative_group_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+                "pattern": r"(\S+)",
+                "group": -1,
+            }
+        ]
+        with pytest.raises(ValueError, match=">= 0"):
+            _make_registry(raw_variables=raw)
+
+    def test_extract_mode_non_integer_group_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+                "pattern": r"(\S+)",
+                "group": "abc",
+            }
+        ]
+        with pytest.raises(ValueError, match="必须是整数"):
+            _make_registry(raw_variables=raw)
+
+    def test_extract_mode_invalid_missing_behavior_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "extract",
+                "source": "src",
+                "pattern": r"(\S+)",
+                "missing_behavior": "invalid",
+            }
+        ]
+        with pytest.raises(ValueError, match="missing_behavior"):
+            _make_registry(raw_variables=raw)
+
+
+class TestDailyLlmMode:
+    def test_daily_llm_default_no_validation(self):
+        raw = [
+            {
+                "key": "today_state",
+                "mode": "daily_llm",
+                "values": '["prompt body"]',
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        definition = registry.variable_definitions["today_state"]
+        assert definition.mode == "daily_llm"
+        assert definition.values == ["prompt body"]
+        assert definition.min_length == 0
+        assert definition.required_markers == ()
+
+    def test_daily_llm_parses_min_length_and_required_markers_json(self):
+        raw = [
+            {
+                "key": "today_state",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "min_length": 200,
+                "required_markers": '["今日：", "整体心情：", "日程时间表"]',
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        definition = registry.variable_definitions["today_state"]
+        assert definition.min_length == 200
+        assert definition.required_markers == ("今日：", "整体心情：", "日程时间表")
+
+    def test_daily_llm_required_markers_native_list(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "required_markers": ["a", "b"],
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        assert registry.variable_definitions["v"].required_markers == ("a", "b")
+
+    def test_daily_llm_required_markers_dedupes_and_skips_empty(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "required_markers": ["a", "", "a", "b", "  "],
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        assert registry.variable_definitions["v"].required_markers == ("a", "b")
+
+    def test_daily_llm_required_markers_single_string(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "required_markers": "今日：",
+            }
+        ]
+        registry = _make_registry(raw_variables=raw)
+        assert registry.variable_definitions["v"].required_markers == ("今日：",)
+
+    def test_daily_llm_required_markers_invalid_json_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "required_markers": "[unclosed",
+            }
+        ]
+        with pytest.raises(ValueError, match="JSON"):
+            _make_registry(raw_variables=raw)
+
+    def test_daily_llm_required_markers_non_list_json_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "required_markers": '{"a": "b"}',
+            }
+        ]
+        with pytest.raises(ValueError, match="JSON 数组"):
+            _make_registry(raw_variables=raw)
+
+    def test_daily_llm_negative_min_length_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "min_length": -1,
+            }
+        ]
+        with pytest.raises(ValueError, match="非负整数"):
+            _make_registry(raw_variables=raw)
+
+    def test_daily_llm_non_integer_min_length_raises(self):
+        raw = [
+            {
+                "key": "v",
+                "mode": "daily_llm",
+                "values": '["prompt"]',
+                "min_length": "abc",
+            }
+        ]
+        with pytest.raises(ValueError, match="非负整数"):
+            _make_registry(raw_variables=raw)
+
+
 class TestParseVariableValues:
     def test_json_list_string(self):
         raw = [{"key": "s", "mode": "literal", "values": '["a", "b"]'}]

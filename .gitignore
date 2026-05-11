@@ -1,6 +1,58 @@
-/src/
+# ──────────────── Python ────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ──────────────── 虚拟环境 / 依赖缓存 ────────────────
+.venv/
+venv/
+env/
+.uv-cache/
+.cache/
+pip-wheel-metadata/
+
+# ──────────────── 测试 / 覆盖率 ────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ──────────────── 类型检查 ────────────────
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# ──────────────── IDE / 编辑器 ────────────────
+/.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ──────────────── Claude Code / 助手本地设置 ────────────────
+.claude/
+
+# ──────────────── 插件运行时数据（不应入库） ────────────────
+/.var_cache/
+/.context/
 /local/
 /dashboard/
-/.idea/
-/.context/
-__pycache__/
+/src/
+
+# ──────────────── 本地配置（含 API key，不入库；以 config.toml.example 为样板） ────────────────
+config.toml
+
+# ──────────────── 配置备份（按时间戳生成，本地用） ────────────────
+config.toml.backup.*
+
+# ──────────────── OS 杂项 ────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

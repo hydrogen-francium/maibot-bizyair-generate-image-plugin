@@ -38,6 +38,8 @@ class CustomVariableDefinition:
     use_raw_condition_value: bool = False
     pattern: str | None = None
     group: int = 1
+    min_length: int = 0
+    required_markers: tuple[str, ...] = ()
 
 
 class CustomVariableRegistry:
@@ -170,6 +172,25 @@ class CustomVariableRegistry:
             else:
                 values = self._parse_variable_values(item.get("values"), f"custom_variables[{index}].values")
 
+            # --- daily_llm 校验字段 ---
+            min_length = 0
+            required_markers: tuple[str, ...] = ()
+            if mode == "daily_llm":
+                raw_min = item.get("min_length", 0)
+                try:
+                    min_length = int(str(raw_min).strip())
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"custom_variables[{index}].min_length 必须是非负整数: {raw_min}"
+                    ) from exc
+                if min_length < 0:
+                    raise ValueError(
+                        f"custom_variables[{index}].min_length 必须是非负整数: {min_length}"
+                    )
+                required_markers = self._parse_required_markers(
+                    item.get("required_markers"), f"custom_variables[{index}].required_markers"
+                )
+
             # --- use_raw 标志位 ---
             use_raw_condition_source = bool(item.get("use_raw_condition_source", False))
             use_raw_condition_value = bool(item.get("use_raw_condition_value", False))
@@ -200,9 +221,51 @@ class CustomVariableRegistry:
                 use_raw_condition_value=use_raw_condition_value,
                 pattern=pattern,
                 group=group,
+                min_length=min_length,
+                required_markers=required_markers,
             )
 
         return definitions
+
+    @staticmethod
+    def _parse_required_markers(value: Any, field_name: str) -> tuple[str, ...]:
+        """
+        解析 daily_llm 的 required_markers，支持 JSON 数组字符串、原生列表或单个字符串
+
+        :param value: Any，原始 required_markers 配置
+        :param field_name: str，当前字段名，用于拼接报错信息
+        :return: tuple[str, ...]，去重后的非空 marker 元组（保持原序）
+        """
+        if value is None:
+            return ()
+        if isinstance(value, list):
+            items = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return ()
+            if text.startswith("[") or text.startswith("{"):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"{field_name} 不是合法的 JSON 数组字符串: {exc}") from exc
+                if not isinstance(parsed, list):
+                    raise ValueError(f"{field_name} 必须是 JSON 数组")
+                items = parsed
+            else:
+                items = [text]
+        else:
+            raise ValueError(f"{field_name} 必须是字符串或字符串数组")
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in items:
+            marker = "" if raw is None else str(raw).strip()
+            if not marker or marker in seen:
+                continue
+            seen.add(marker)
+            result.append(marker)
+        return tuple(result)
 
     @staticmethod
     def _parse_variable_values(value: Any, field_name: str) -> list[str]:

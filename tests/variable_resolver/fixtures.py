@@ -24,6 +24,10 @@ def make_definition(
     fallback_value: str = "",
     use_raw_condition_source: bool = False,
     use_raw_condition_value: bool = False,
+    pattern: str | None = None,
+    group: int = 1,
+    min_length: int = 0,
+    required_markers: tuple[str, ...] = (),
 ) -> CustomVariableDefinition:
     """
     构造测试用自定义变量定义对象
@@ -37,12 +41,16 @@ def make_definition(
     :param condition_source: str | None，条件判断的数据来源
     :param condition_value: str | None，条件判断的比较值模板
     :param values_else: list[str] | None，条件未命中时的候选模板列表
-    :param source: str | None，dict 模式的数据来源
+    :param source: str | None，dict / extract 模式的数据来源
     :param entries: dict[str, str] | None，dict 模式键值映射
-    :param missing_behavior: str，dict 模式缺失行为
-    :param fallback_value: str，dict 模式兜底模板
+    :param missing_behavior: str，dict / extract 模式缺失行为
+    :param fallback_value: str，dict / extract 模式兜底模板
     :param use_raw_condition_source: bool，条件来源是否使用原始值
     :param use_raw_condition_value: bool，条件参数是否使用字面文本
+    :param pattern: str | None，extract 模式的正则表达式
+    :param group: int，extract 模式的捕获组编号
+    :param min_length: int，daily_llm 模式输出最小长度（0 表示不校验）
+    :param required_markers: tuple[str, ...]，daily_llm 模式必需出现在输出中的标记
     :return: CustomVariableDefinition，构造好的变量定义对象
     """
     return CustomVariableDefinition(
@@ -61,6 +69,10 @@ def make_definition(
         fallback_value=fallback_value,
         use_raw_condition_source=use_raw_condition_source,
         use_raw_condition_value=use_raw_condition_value,
+        pattern=pattern,
+        group=group,
+        min_length=min_length,
+        required_markers=required_markers,
     )
 
 
