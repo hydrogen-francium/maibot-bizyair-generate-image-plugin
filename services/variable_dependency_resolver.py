@@ -676,6 +676,7 @@ class VariableDependencyResolver:
                 definition.key,
                 lambda: llm_value_factory(selected_value),
                 validator=_validate if has_validation else None,
+                fallback=(lambda: definition.fallback_value) if definition.fallback_value else None,
             )
 
         return await llm_value_factory(selected_value)

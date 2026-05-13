@@ -102,8 +102,7 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
 
         status = str(data.get("status", "")).strip()
         if status != self.SUCCESS_STATUS:
-            body_lower = str(data).lower()
-            if "content_filter" in body_lower or "content filter" in body_lower or "审核" in body_lower:
+            if self._is_content_filter_failure(data):
                 raise BizyAirOpenApiContentFilterError(
                     f"OpenAPI 调用被内容审核拦截，status={status!r}, body={data}",
                     status_code=None,
@@ -147,6 +146,27 @@ class BizyAirOpenApiClient(BizyAirBaseClient):
             outputs=outputs,
             raw_data=data,
         )
+
+    @staticmethod
+    def _is_content_filter_failure(data: dict[str, Any]) -> bool:
+        """判断 BizyAir 失败响应是否属于内容审核 / 422 类失败，触发 prompt 清洗重试。"""
+        body_lower = str(data).lower()
+        if "content_filter" in body_lower or "content filter" in body_lower or "审核" in body_lower:
+            return True
+        outputs = data.get("outputs")
+        if isinstance(outputs, list):
+            for item in outputs:
+                if not isinstance(item, dict):
+                    continue
+                error_type = str(item.get("error_type") or "").upper()
+                error_msg = str(item.get("error_msg") or "")
+                if "COMFY_ERROR" in error_type and ("http code: 422" in error_msg or "code: 422" in error_msg):
+                    return True
+                if any(kw in error_msg.lower() for kw in ("content_filter", "content filter", "sensitive", "nsfw", "policy violation")):
+                    return True
+                if any(kw in error_msg for kw in ("审核", "敏感", "违规")):
+                    return True
+        return False
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:

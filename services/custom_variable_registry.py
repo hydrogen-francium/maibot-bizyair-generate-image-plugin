@@ -190,6 +190,7 @@ class CustomVariableRegistry:
                 required_markers = self._parse_required_markers(
                     item.get("required_markers"), f"custom_variables[{index}].required_markers"
                 )
+                fallback_value = "" if item.get("fallback_value") is None else str(item["fallback_value"]).strip()
 
             # --- use_raw 标志位 ---
             use_raw_condition_source = bool(item.get("use_raw_condition_source", False))

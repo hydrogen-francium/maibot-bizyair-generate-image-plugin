@@ -78,24 +78,26 @@ class TestDailyLlmCacheHitMiss:
 class TestPurgeStale:
     @pytest.mark.asyncio
     async def test_old_day_cache_files_purged_on_miss(self, cache: DailyLlmCache):
-        old_path = cache.cache_dir / "today_state.2000-01-01.json"
-        old_path.write_text(
-            json.dumps({"value": "old", "date_key": "2000-01-01"}),
-            encoding="utf-8",
-        )
-        another_old = cache.cache_dir / "today_state.1999-12-31.json"
-        another_old.write_text(
-            json.dumps({"value": "older", "date_key": "1999-12-31"}),
-            encoding="utf-8",
-        )
+        """生成新缓存时，超出保留窗口的非常老历史文件被清除（保留近 7 份用于兜底）"""
+        # 8 个旧日期，写入后只保留最近 7 份历史 + 今日一份
+        old_dates = [
+            "2000-01-01", "2000-01-02", "2000-01-03", "2000-01-04",
+            "2000-01-05", "2000-01-06", "2000-01-07", "2000-01-08",
+        ]
+        for d in old_dates:
+            (cache.cache_dir / f"today_state.{d}.json").write_text(
+                json.dumps({"value": f"old {d}", "date_key": d}),
+                encoding="utf-8",
+            )
 
         async def gen() -> str:
             return "today"
 
         await cache.get_or_generate("today_state", gen)
 
-        assert not old_path.exists()
-        assert not another_old.exists()
+        # 最老的那份应被清掉；最近的几份应保留
+        assert not (cache.cache_dir / "today_state.2000-01-01.json").exists()
+        assert (cache.cache_dir / "today_state.2000-01-08.json").exists()
         assert cache._cache_path("today_state").exists()
 
     @pytest.mark.asyncio
@@ -129,13 +131,14 @@ class TestValidator:
 
     @pytest.mark.asyncio
     async def test_validator_fail_raises_and_does_not_write_cache(self, cache: DailyLlmCache):
+        """两次重试都失败、无历史缓存、无 fallback 时抛 DailyLlmValidationError 且不写盘"""
         async def gen() -> str:
             return "bad"
 
         def validator(v: str) -> None:
             raise DailyLlmValidationError("too short")
 
-        with pytest.raises(DailyLlmValidationError, match="too short"):
+        with pytest.raises(DailyLlmValidationError, match="重试与历史缓存"):
             await cache.get_or_generate("k", gen, validator=validator)
 
         assert not cache._cache_path("k").exists()
@@ -162,8 +165,8 @@ class TestValidator:
         assert validator_calls == 0
 
     @pytest.mark.asyncio
-    async def test_validator_failure_allows_retry_in_same_day(self, cache: DailyLlmCache):
-        """validator 失败不写盘，允许同一天再次尝试生成（不会读到污染缓存）"""
+    async def test_validator_failure_first_retry_succeeds(self, cache: DailyLlmCache):
+        """首次校验失败，当场重试一次成功，应直接返回重试值并写盘"""
         outputs = iter(["bad", "good output"])
 
         async def gen() -> str:
@@ -173,12 +176,45 @@ class TestValidator:
             if len(v) < 5:
                 raise DailyLlmValidationError("too short")
 
-        with pytest.raises(DailyLlmValidationError):
-            await cache.get_or_generate("k", gen, validator=validator)
-
         result = await cache.get_or_generate("k", gen, validator=validator)
         assert result == "good output"
         assert cache._cache_path("k").exists()
+
+    @pytest.mark.asyncio
+    async def test_validator_failure_falls_back_to_historic_cache(self, cache: DailyLlmCache, tmp_path):
+        """重试仍失败时，回退到历史合法缓存"""
+        # 准备一份昨天的合法缓存
+        yesterday_path = cache.cache_dir / "k.2020-01-01.json"
+        yesterday_path.write_text(
+            json.dumps({"value": "yesterday valid", "date_key": "2020-01-01"}),
+            encoding="utf-8",
+        )
+
+        async def gen() -> str:
+            return "bad"
+
+        def validator(v: str) -> None:
+            raise DailyLlmValidationError("always bad")
+
+        result = await cache.get_or_generate("k", gen, validator=validator)
+        assert result == "yesterday valid"
+        # 不写今日缓存，等下次合法生成
+        assert not cache._cache_path("k").exists()
+
+    @pytest.mark.asyncio
+    async def test_validator_failure_falls_back_to_fallback_callable(self, cache: DailyLlmCache):
+        """重试失败 + 无历史缓存时，调用 fallback 返回兜底文案"""
+        async def gen() -> str:
+            return "bad"
+
+        def validator(v: str) -> None:
+            raise DailyLlmValidationError("always bad")
+
+        result = await cache.get_or_generate(
+            "k", gen, validator=validator, fallback=lambda: "fallback text"
+        )
+        assert result == "fallback text"
+        assert not cache._cache_path("k").exists()
 
 
 class TestConcurrency:

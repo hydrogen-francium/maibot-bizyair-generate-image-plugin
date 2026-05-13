@@ -93,7 +93,7 @@ class TestDailyLlmResolveAll:
                 min_length=200,
             ),
         }
-        with pytest.raises(DailyLlmValidationError, match="长度"):
+        with pytest.raises(DailyLlmValidationError, match="重试与历史缓存"):
             await make_resolver(
                 action_inputs={},
                 definitions=defs,
@@ -117,7 +117,7 @@ class TestDailyLlmResolveAll:
                 required_markers=("今日：", "整体心情：", "日程时间表"),
             ),
         }
-        with pytest.raises(DailyLlmValidationError, match="日程时间表"):
+        with pytest.raises(DailyLlmValidationError, match="重试与历史缓存"):
             await make_resolver(
                 action_inputs={},
                 definitions=defs,
