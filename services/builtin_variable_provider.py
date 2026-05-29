@@ -24,12 +24,14 @@ class BuiltinVariableProvider:
     DEFAULT_RECENT_CHAT_CONTEXT_LIMITS = (10, 30, 50)
 
     def __init__(self, *, chat_id: str, filter_mai: bool = False,
+                 is_group: bool = False,
                  message_image_base64_provider: Callable[[], str | None] | None = None) -> None:
         """
         初始化内置变量提供器并注册默认变量定义
 
         :param chat_id: str，当前 action 所属聊天会话 ID
         :param filter_mai: bool，获取聊天记录时是否过滤 MaiBot 自身消息
+        :param is_group: bool，当前会话是否为群聊（群聊 True / 私聊 False），用于 chat_type 内置变量
         :param message_image_base64_provider: Callable[[], str | None] | None，获取消息中图片 base64 的回调函数，返回 None 表示无图片
         :return: None，无返回值
         """
@@ -39,6 +41,7 @@ class BuiltinVariableProvider:
 
         self.chat_id = chat_id
         self.filter_mai = filter_mai
+        self._is_group = bool(is_group)
         self._message_image_base64_provider = message_image_base64_provider
         self._definitions: dict[str, BuiltinVariableDefinition] = {}
         self._cache: dict[str, Any] = {}
@@ -75,7 +78,7 @@ class BuiltinVariableProvider:
         :return: frozenset[str]，默认注册的内置变量名称集合
         """
         return frozenset(
-            {"random_seed", "current_datetime", "quoted_image_base64"}
+            {"random_seed", "current_datetime", "quoted_image_base64", "chat_type"}
             | {f"recent_chat_context_{limit}" for limit in cls.DEFAULT_RECENT_CHAT_CONTEXT_LIMITS}
         )
 
@@ -124,11 +127,20 @@ class BuiltinVariableProvider:
         self.register("random_seed", self._build_random_seed)
         self.register("current_datetime", self._build_current_datetime)
         self.register("quoted_image_base64", self._build_quoted_image_base64)
+        self.register("chat_type", self._build_chat_type)
         for limit in self.DEFAULT_RECENT_CHAT_CONTEXT_LIMITS:
             self.register(
                 f"recent_chat_context_{limit}",
                 lambda limit=limit: self._build_recent_chat_context(limit),
             )
+
+    def _build_chat_type(self) -> str:
+        """
+        生成当前会话类型内置变量的值
+
+        :return: str，群聊返回 "group"，私聊返回 "private"
+        """
+        return "group" if self._is_group else "private"
 
     def _build_random_seed(self) -> int:
         """

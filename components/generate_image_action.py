@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import time
 import traceback
@@ -79,39 +80,41 @@ class GenerateImageAction(BaseAction):
     ]
 
     async def execute(self) -> Tuple[bool, str]:
-        """执行生图流程并在失败时返回完整错误信息"""
+        """快速校验后将耗时生图流程派发到后台任务，避免占用 thinker 槽位"""
         try:
             if not self.action_enabled:
                 await self.send_text("当前图片生成功能未开启", storage_message=True)
                 return False, "当前图片生成功能未开启"
 
-            failure_stage = "permission_check"
             user_id = str(self.user_id)
             has_permission, deny_reason = permission_manager.check_action_permission(user_id)
             if not has_permission:
                 return False, deny_reason or "当前用户没有使用该 action 的权限"
 
-            failure_stage = "collect_action_inputs"
             action_inputs = self._collect_action_inputs()
             active_preset = str(self.active_preset).strip()
 
-            failure_stage = "resolve_preset"
-            resolved_preset = self._resolve_active_preset(active_preset)
-            provider = resolved_preset["provider"]
+            asyncio.create_task(
+                self._run_generation_pipeline(action_inputs, active_preset),
+                name=f"bizyair_generate_image[{self.chat_id}]",
+            )
+            logger.info(f"{self.log_prefix} 已派发后台生图任务，立即释放 thinker 槽位")
+            return True, "已开始在后台生成图片，完成后会自动发送"
+        except Exception as exc:
+            stack_trace = traceback.format_exc()
+            logger.error(f"{self.log_prefix} generate_image 派发失败: {exc}\n{stack_trace}")
+            raw_reply = f"[图片生成失败] {type(exc).__name__}: {exc}\n调用栈:\n{stack_trace}"
+            await self._send_failure_reply(raw_reply)
+            return False, raw_reply
 
-            failure_stage = "filter_parameter_bindings"
-            all_parameter_bindings_config = self._get_parameter_bindings_config(provider)
-            parameter_bindings_config = self._filter_parameter_bindings_by_preset(
-                all_parameter_bindings_config, active_preset
-            )
-            logger.info(
-                f"{self.log_prefix} 生图配置摘要: provider={provider!r}, active_preset={active_preset!r}, resolved_preset={short_repr(resolved_preset)}, "
-                f"action_inputs={short_repr(action_inputs)}, custom_variable_keys={list(self.get_config('custom_variables_config.custom_variables', [])) and [str(item.get('key', '')).strip() for item in self.get_config('custom_variables_config.custom_variables', []) if isinstance(item, dict) and str(item.get('key', '')).strip()]}, "
-                f"binding_fields={[str(item.get('field', '')).strip() for item in parameter_bindings_config if isinstance(item, dict)]}"
-            )
+    async def _run_generation_pipeline(self, action_inputs: dict[str, Any], active_preset: str) -> None:
+        """后台执行实际的生图流程；失败/成功都自行落地，不再回到 execute 调用方"""
+        failure_stage = "background_start"
+        try:
             builtin_variable_provider = BuiltinVariableProvider(
                 chat_id=self.chat_id,
                 filter_mai=False,
+                is_group=self.is_group,
                 message_image_base64_provider=self._extract_message_image_base64,
             )
             failure_stage = "build_custom_variable_registry"
@@ -119,8 +122,17 @@ class GenerateImageAction(BaseAction):
                 raw_variables=self.get_config("custom_variables_config.custom_variables", []),
                 action_parameter_names=set(self.action_parameters.keys()),
             )
+
+            # 变量解析提前到 preset 选择之前：source_preset 依赖 final_prompt，
+            # 而 final_prompt 与具体 preset 无关。先按「所有 provider 的参数映射并集」一次性解析，
+            # 再由下游 LLM(source_decision → source_preset) 用最终提示词决定本次走哪个预设。
+            failure_stage = "collect_union_parameter_bindings"
+            union_parameter_bindings = self._collect_union_parameter_bindings()
+
             failure_stage = "collect_required_variables"
-            direct_variable_keys = custom_variable_registry.collect_required_variable_keys(parameter_bindings_config)
+            direct_variable_keys = set(custom_variable_registry.collect_required_variable_keys(union_parameter_bindings))
+            if "source_preset" in custom_variable_registry.variable_definitions:
+                direct_variable_keys.add("source_preset")
             builtin_names = BuiltinVariableProvider.get_default_variable_names()
             required_variable_keys = VariableDependencyResolver.compute_required_variable_keys(
                 direct_keys=direct_variable_keys,
@@ -135,7 +147,9 @@ class GenerateImageAction(BaseAction):
             )
 
             failure_stage = "build_builtin_placeholders"
-            required_builtin_names = self._collect_builtin_placeholder_names(provider, parameter_bindings_config)
+            required_builtin_names = BizyAirOpenApiInputValueBuilder.collect_builtin_placeholder_names_from_bindings(
+                union_parameter_bindings
+            )
             builtin_placeholder_values = builtin_variable_provider.build_placeholder_values(required_builtin_names)
             logger.debug(
                 f"{self.log_prefix} 内置变量摘要: required_builtin_names={sorted(required_builtin_names)}, "
@@ -158,6 +172,25 @@ class GenerateImageAction(BaseAction):
             )
             template_context = {**resolved_action_inputs, **custom_variable_values}
 
+            # 下游 LLM 决定的一次性预设覆盖；source_preset 为空则沿用全局 active_preset
+            failure_stage = "decide_effective_preset"
+            effective_preset = self._decide_effective_preset(active_preset, custom_variable_values)
+
+            failure_stage = "resolve_preset"
+            resolved_preset = self._resolve_active_preset(effective_preset)
+            provider = resolved_preset["provider"]
+
+            failure_stage = "filter_parameter_bindings"
+            all_parameter_bindings_config = self._get_parameter_bindings_config(provider)
+            parameter_bindings_config = self._filter_parameter_bindings_by_preset(
+                all_parameter_bindings_config, effective_preset
+            )
+            logger.info(
+                f"{self.log_prefix} 生图配置摘要: provider={provider!r}, active_preset={active_preset!r}, "
+                f"effective_preset={effective_preset!r}, resolved_preset={short_repr(resolved_preset)}, "
+                f"binding_fields={[str(item.get('field', '')).strip() for item in parameter_bindings_config if isinstance(item, dict)]}"
+            )
+
             failure_stage = "build_provider_payload"
             provider_payload, timeout = await self._build_provider_payload(
                 provider=provider,
@@ -170,7 +203,7 @@ class GenerateImageAction(BaseAction):
 
             logger.info(
                 f"{self.log_prefix} 图片生成摘要: provider={provider}, active_preset={active_preset!r}, "
-                f"resolved_preset={short_repr(resolved_preset)}, "
+                f"effective_preset={effective_preset!r}, resolved_preset={short_repr(resolved_preset)}, "
                 f"action_inputs={resolved_action_inputs!r}, "
                 f"custom_variable_values={custom_variable_values!r}, "
                 f"timeout={timeout}")
@@ -206,14 +239,24 @@ class GenerateImageAction(BaseAction):
                 action_prompt_display=self._build_action_display(action_inputs),
                 action_done=True,
             )
-            return True, f"图片生成并发送完成，使用的参数: {template_context}"
+            logger.info(f"{self.log_prefix} 后台生图任务完成: 使用的参数: {template_context}")
         except Exception as exc:
             stack_trace = traceback.format_exc()
-            logger.info(f"{self.log_prefix} 生图流程失败阶段: {locals().get('failure_stage', 'unknown')}")
-            logger.error(f"{self.log_prefix} generate_image 执行失败: {exc}\n{stack_trace}")
+            logger.info(f"{self.log_prefix} 后台生图流程失败阶段: {failure_stage}")
+            logger.error(f"{self.log_prefix} generate_image 后台任务失败: {exc}\n{stack_trace}")
             raw_reply = f"[图片生成失败] {type(exc).__name__}: {exc}\n调用栈:\n{stack_trace}"
-            await self._send_failure_reply(raw_reply)
-            return False, raw_reply
+            try:
+                await self._send_failure_reply(raw_reply)
+            except Exception as send_exc:
+                logger.error(f"{self.log_prefix} 失败回复发送也失败了: {send_exc}")
+            try:
+                await self.store_action_info(
+                    action_build_into_prompt=True,
+                    action_prompt_display=self._build_action_display(action_inputs),
+                    action_done=False,
+                )
+            except Exception as store_exc:
+                logger.error(f"{self.log_prefix} 后台失败时写入 action_info 失败: {store_exc}")
 
     def _extract_message_image_base64(self, message_segment_list: Optional[List[Seg]] = None) -> Optional[str]:
         """
@@ -354,6 +397,40 @@ class GenerateImageAction(BaseAction):
         if provider == "nai_chat":
             return self.get_config("nai_chat_client.parameter_mappings", [])
         raise ValueError(f"未知的 provider: {provider}")
+
+    def _collect_union_parameter_bindings(self) -> list:
+        """汇总所有 provider 的参数映射并集
+
+        在选定 preset 之前需要先解析变量（含 source_preset 依赖的 final_prompt），
+        而不同 provider 的参数映射引用的变量不一样，因此取并集喂给变量收集器，
+        保证无论下游 LLM 最终选中哪个预设，其所需变量都已被纳入解析。
+        """
+        union: list = []
+        for config_key in (
+                "bizyair_client.openapi_parameter_mappings",
+                "nai_chat_client.parameter_mappings",
+        ):
+            bindings = self.get_config(config_key, [])
+            if isinstance(bindings, list):
+                union.extend(item for item in bindings if isinstance(item, dict))
+        if not union:
+            raise ValueError(
+                "未配置任何参数映射（bizyair_client.openapi_parameter_mappings / nai_chat_client.parameter_mappings）"
+            )
+        return union
+
+    @staticmethod
+    def _decide_effective_preset(active_preset: str, custom_variable_values: dict[str, Any]) -> str:
+        """根据下游 LLM 解析出的 source_preset 决定本次实际使用的预设
+
+        source_preset 为空（变量未启用或解析失败）时沿用全局 active_preset，
+        否则用解析出的预设名覆盖本次调用（一次性，不写盘）。
+        """
+        override = str(custom_variable_values.get("source_preset", "") or "").strip()
+        if override and override != active_preset:
+            logger.info(f"[预设决策] source_preset 覆盖本次预设: {active_preset!r} -> {override!r}")
+            return override
+        return active_preset
 
     def _collect_builtin_placeholder_names(self, provider: str, parameter_bindings_config: Any) -> set[str]:
         """按后端提取本次需要构造的内置变量名"""

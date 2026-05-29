@@ -9,7 +9,7 @@
 
 bearer_token = ""  # 必填：在 https://bizyair.cn 控制台获取
 openapi_url = "https://api.bizyair.cn/w/v1/webapp/task/openapi/create"
-timeout = 180
+timeout = 300
 
 # --- 两个 BizyAir App 预设，default 走 NanoBanana，空白的GPT 走 GPT_IMAGE_2 ---
 [[bizyair_client.app_presets]]
@@ -26,6 +26,11 @@ description = "GPT bizyair 官"
 preset_name = "空白的便宜GPT文生图"
 app_id = 53628
 description = "空白酱说随便蹬"
+
+[[bizyair_client.app_presets]]
+preset_name = "自己找的二百一次"
+app_id = "52231"
+description = "上面的53628404了，遂找到了个新的"
 [[bizyair_client.openapi_parameter_mappings]]
 preset_name = "default"
 field = "18:BizyAir_NanoBananaProOfficial.prompt"
@@ -86,20 +91,36 @@ field = "17:BizyAir_GPT_IMAGE_2_T2I_API.resolution"
 value_type = "string"
 value = "{resolution_gpt}"
 
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "自己找的二百一次"
+field = "4:BizyAir_GPT_IMAGE_2_T2I_API.prompt"
+value_type = "string"
+value = "{final_prompt}"
+send_if_empty = false
+upload = false
+
+[[bizyair_client.openapi_parameter_mappings]]
+preset_name = "自己找的二百一次"
+field = "4:BizyAir_GPT_IMAGE_2_T2I_API.aspect_ratio"
+value_type = "string"
+value = "{aspect_ratio}"
+send_if_empty = false
+upload = false
+
 [nai_chat_client]
 timeout = 180
 
 [[nai_chat_client.presets]]
 preset_name = "nai_default"
-description = "默认 NAI Chat 预设（未使用）"
+description = "默认 NAI Chat 预设"
 base_url = "https://your-domain.example.com/v1"
 api_key = ""
-model = "nai-diffusion-4-5-full-anlas-0"
+model = "nai-diffusion-4-5-full"
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
 field = "prompt"
 value_type = "string"
-value = "{final_prompt}"
+value = "{final_prompt_nai}"
 
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
@@ -116,14 +137,14 @@ value = "23"
 [bizyair_generate_image_plugin]
 
 action_enabled = true
-active_preset = "空白的GPT"
+active_preset = "自己找的二百一次"
 send_text_before_image = false
 text_before_image = "我给你生成了一张图片"
 enable_rewrite_failure_reply = true
 enable_splitter = false
 
 # --- 决策器只需填一个意图字段 ---
-action_require = "该 action 给了你画画的能力。下游有一条LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【什么时候用】\n用户明确要画图；或者你自己突然想画了——氛围到位、灵光一闪、图比文字更能表达，都可以主动用。别滥用、别为了画而画。（画图还是很贵的，也别太随便的用）\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「氢刚说我傲娇，我要画张自己气鼓鼓的自拍喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
+action_require = "该 action 给了你画画的能力。下游有一条LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【什么时候用】\n用户明确要画图；或者你自己突然想画了——氛围到位、灵光一闪、图比文字更能表达，都可以主动用。别滥用、别为了画而画。\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「氢刚说我傲娇，我要画张自己气鼓鼓的自拍喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
 [[bizyair_generate_image_plugin.action_parameters]]
 name = "image_intent"
 description = "必填，一句自然语言描述你想生成什么样的画面。把当下脑子里冒出的画面想法用一句话说出来即可，例：「氢刚才说我傲娇，我要画一张自己气鼓鼓的自拍喵」「画一只蹲在窗台上看月亮的小猫」「钠半夜被氢突然夸了一句，害羞得抓着马尾发呆的自拍」。后续会自动由「导演」LLM 结合最近聊天上下文展开为结构化决策。"
@@ -181,7 +202,7 @@ values = "[\"自己的房间（书桌、动漫海报、毛绒玩具）/ 客厅�
 key = "director"
 mode = "llm"
 probability = 1
-values = "[\"你是生图工作流中的「导演」。根据决策器传来的自然语言意图、最近聊天上下文和「钠的今日状态」，输出一组结构化决策标签和一段自由发挥的画面描述，供下游模块组装最终生图提示词。\\n\\n## 主角背景（仅当画面包含主角「钠」时使用）\\n钠（Natrium），猫娘天才科学家：\\n- 茶褐色头发松垮地扎着低马尾\\n- 黄色眼睛\\n- 茶褐色猫耳和猫尾\\n- 体型纤细娇小\\n- 居家穿黑色运动短裤+粉白色圆领睡衣\\n- 性格傲娇高冷，对住一起的氢有好感，遇到笨蛋会内心吐槽\\n\\n## 输出格式（严格遵守，每行一项 KEY: value，全部使用半角冒号；不要 Markdown 代码块；不要任何前后缀）\\nSCENE_TYPE: <selfie 或 normal>\\nSTYLE_HINT: <anime|realistic|sketchy 三选一>\\nEMOTION: <从下方 25 个池中选 1 个，或自定义英文小写词；池：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/smirk/embarrassed/focused>\\nPOSE: <phone_in_hand|front_of_mirror|bed_lying|bathroom_mirror|window_side|selfie_stick_wide 中 6 选 1>\\nOUTFIT_BRIEF: <10 字内中文穿搭描述，仅 selfie 必填，否则填 default>\\nFREE_PROMPT: <一句中文自然语言画面描述>\\n\\n## 字段规则\\n- SCENE_TYPE：意图含「自拍/拍我/发张自拍/给我拍照」等明确自拍信号 → selfie；其它一律 normal\\n- STYLE_HINT：仅 normal 路径生效（selfie 路径走固定动漫风，填什么都不影响）。三选一：anime（动漫/二次元/插画/角色梗/Q 版/拟人/猫娘场景）、realistic（写实摄影/真人写真/物品照片/动植物/纪实场景）、sketchy（清淡手绘/水彩/简笔卡通/插画感、不强调细节真实）。意图含「写真/照片/拍/真实/纪实/物品摄影」选 realistic；含「卡通/简笔/水彩/手绘/插画感」选 sketchy；其它默认 anime\\n- EMOTION：必填。**优先**从池内 25 个挑（命中走 dict，无额外 LLM 调用）：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/smirk/embarrassed/focused。如果池内没有完全合适的，**允许**输出一个自定义英文小写词（不超过 10 字符，例：grumpy/bashful/yandere/sulky），系统会现场调 LLM 翻译成英文表情 tag。映射参考：傲娇炸毛→pout/mischief/annoyed；害羞→shy/embarrassed；放松→chill/peace/soft；开心→joy/playful/excited；困倦→sleepy；得意→proud/smirk/wink；呆萌→cute；冷酷→cool；做梦→dreamy；柔软→tender/soft；优雅→glam；活力→energetic；惊讶→surprised；委屈→teary；专注/认真→thoughtful/focused\\n- POSE：仅 selfie 必填，按场景挑构图；**对比当前时间 {current_datetime} 和 today_state 的时间表**，找到当下时段对应的地点再选构图（家里房间→front_of_mirror/bed_lying；客厅/厨房/阳台→phone_in_hand；外出便利店/公园/咖啡馆→phone_in_hand/selfie_stick_wide；浴室→bathroom_mirror；窗边→window_side）；非自拍场景填 phone_in_hand 占位\\n  - phone_in_hand：手持手机直接拍（默认，胸像/特写、户外、紧凑空间）\\n  - front_of_mirror：站镜子前自拍（半身/全身、房间内）\\n  - bed_lying：躺床上仰角自拍（私密放松、卧室、低角度）\\n  - bathroom_mirror：浴室镜子自拍（家居场景、卫生间）\\n  - window_side：窗边逆光自拍（氛围感、自然光、半身）\\n  - selfie_stick_wide：自拍杆远景（户外、全身、风景背景）\\n- OUTFIT_BRIEF：仅 selfie 必填，根据 today_state 时间表当下时段的活动 + 场景情绪决定，例：在家随意→「黑短裤+粉白睡衣」；外出约人→「白色连衣裙」；运动/活力场景→「红色卫衣+牛仔裤」；非自拍场景填 default；**只描述衣服本身，不要写动作/手势/手部状态**\\n- FREE_PROMPT：**必填且不能为空**，至少一句完整的中文画面描述（最短 8 字，鼓励 20 字以上让画面更有信息量）。漏写或空值会让整条生图流水线退化到决策器的原始意图，导致下游模块拿不到导演的细化结果\\n  - selfie 时：聚焦钠当下的**情境/动作/小细节/视线/氛围**，结合今日状态融入地点活动。请大胆写具体一点：在做什么、看哪里、被什么触动、附近有什么、空气里有什么、身边有谁/有什么物品。**只描述钠当下的状态与画面氛围**，不要描述外貌（人设已固定）、不要描述构图（pose 已固定）、**不要描述手势/手部位置**（手部已由 pose 模板锁定）。例：「在咖啡馆窗边发呆，桌上摆着没吃完的草莓蛋糕，午后阳光斜斜落在脸上」「半夜被氢突然夸了一句脸瞬间通红，正想回嘴又卡住，眼神飘开」「公园长椅上叼着冰棒翘着腿，旁边一只野猫凑过来嗅尾巴」\\n  - normal 时：完整描述画面；如果画的是钠请明说「画钠」，如果画其它（角色、风景、动物、物体）请明确主体\\n\\n## 当前时间（用来对照 today_state 时间表选地点 / 构图 / 穿搭）\\n{current_datetime}\\n\\n## 钠的今日状态参考（含时间表，请融入决策让画面有连贯日常感）\\n{today_state}\\n\\n## 输入\\n意图：{image_intent}\\n\\n聊天上下文（最近 30 条）：\\n{recent_chat_context_30}\\n\\n## 输出（直接以 SCENE_TYPE 开头）\"]"
+values = "[\"你是生图工作流中的「导演」。根据决策器传来的自然语言意图、最近聊天上下文和「钠的今日状态」，输出一组结构化决策标签和一段自由发挥的画面描述，供下游模块组装最终生图提示词。\\n\\n## 主角背景（仅当画面包含主角「钠」时使用）\\n钠（Natrium），猫娘天才科学家：\\n- 茶褐色头发松垮地扎着低马尾\\n- 黄色眼睛\\n- 茶褐色猫耳和猫尾\\n- 体型纤细娇小\\n- 居家穿黑色运动短裤+粉白色圆领睡衣\\n- 性格傲娇高冷，对住一起的氢有好感，遇到笨蛋会内心吐槽\\n\\n## 输出格式（严格遵守，每行一项 KEY: value，全部使用半角冒号；不要 Markdown 代码块；不要任何前后缀）\\nSCENE_TYPE: <selfie 或 normal>\\nSTYLE_HINT: <anime|realistic|sketchy 三选一>\\nINCLUDES_NATRIUM: <yes 或 no>\\nEMOTION: <从下方 24 个池中选 1 个，或自定义英文小写词；池：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/embarrassed/focused>\\nPOSE: <phone_in_hand|front_of_mirror|bed_lying|bathroom_mirror|window_side|selfie_stick_wide 中 6 选 1>\\nOUTFIT_BRIEF: <10 字内中文穿搭描述，仅 selfie 必填，否则填 default>\\nFREE_PROMPT: <一句中文自然语言画面描述>\\n\\n## 字段规则\\n- SCENE_TYPE：意图含「自拍/拍我/发张自拍/给我拍照」等明确自拍信号 → selfie；其它一律 normal\\n- STYLE_HINT：仅 normal 路径生效（selfie 路径走固定动漫风，填什么都不影响）。三选一：anime（动漫/二次元/插画/角色梗/Q 版/拟人/猫娘场景）、realistic（写实摄影/真人写真/物品照片/动植物/纪实场景）、sketchy（清淡手绘/水彩/简笔卡通/插画感、不强调细节真实）。意图含「写真/照片/拍/真实/纪实/物品摄影」选 realistic；含「卡通/简笔/水彩/手绘/插画感」选 sketchy；其它默认 anime。**硬约束**：钠是动漫角色，写实风会破坏人设。如果画面包含钠（INCLUDES_NATRIUM=yes），STYLE_HINT 不能是 realistic（请改 anime 或 sketchy）；如果用户**明确**要写实风，则必须 INCLUDES_NATRIUM=no（即换其它非钠主体）；二者不可共存\\n- INCLUDES_NATRIUM：必填。yes 表示画面里有钠（自拍场景一定 yes；normal 场景里画钠也填 yes），no 表示画面主体不是钠（其它角色、风景、物品、动植物、风景纪实等）。selfie 路径**只能填 yes**；normal 路径根据意图判断。优先级：用户明确点名画钠 → yes；用户明确画其它人/物/景 → no；模糊时按「主体是不是钠」判断\\n- EMOTION：必填。**优先**从池内 25 个挑（命中走 dict，无额外 LLM 调用）：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/embarrassed/focused。如果池内没有完全合适的，**允许**输出一个自定义英文小写词（不超过 10 字符，例：grumpy/bashful/yandere/sulky），系统会现场调 LLM 翻译成英文表情 tag。映射参考：傲娇炸毛→pout/mischief/annoyed；害羞→shy/embarrassed；放松→chill/peace/soft；开心→joy/playful/excited；困倦→sleepy；得意→proud/wink；呆萌→cute；冷酷→cool；做梦→dreamy；柔软→tender/soft；优雅→glam；活力→energetic；惊讶→surprised；委屈→teary；专注/认真→thoughtful/focused\\n- POSE：仅 selfie 必填，按场景挑构图；**对比当前时间 {current_datetime} 和 today_state 的时间表**，找到当下时段对应的地点再选构图（家里房间→front_of_mirror/bed_lying；客厅/厨房/阳台→phone_in_hand；外出便利店/公园/咖啡馆→phone_in_hand/selfie_stick_wide；浴室→bathroom_mirror；窗边→window_side）；非自拍场景填 phone_in_hand 占位\\n  - phone_in_hand：手持手机直接拍（默认，胸像/特写、户外、紧凑空间）\\n  - front_of_mirror：站镜子前自拍（半身/全身、房间内）\\n  - bed_lying：躺床上仰角自拍（私密放松、卧室、低角度）\\n  - bathroom_mirror：浴室镜子自拍（家居场景、卫生间）\\n  - window_side：窗边逆光自拍（氛围感、自然光、半身）\\n  - selfie_stick_wide：自拍杆远景（户外、全身、风景背景）\\n- OUTFIT_BRIEF：仅 selfie 必填，根据 today_state 时间表当下时段的活动 + 场景情绪决定，例：在家随意→「黑短裤+粉白睡衣」；外出约人→「白色连衣裙」；运动/活力场景→「红色卫衣+牛仔裤」；非自拍场景填 default；**只描述衣服本身，不要写动作/手势/手部状态**\\n- FREE_PROMPT：**必填且不能为空**，至少一句完整的中文画面描述（最短 8 字，鼓励 20 字以上让画面更有信息量）。漏写或空值会让整条生图流水线退化到决策器的原始意图，导致下游模块拿不到导演的细化结果\\n  - selfie 时：聚焦钠当下的**情境/动作/小细节/视线/氛围**，结合今日状态融入地点活动。请大胆写具体一点：在做什么、看哪里、被什么触动、附近有什么、空气里有什么、身边有谁/有什么物品。**只描述钠当下的状态与画面氛围**，不要描述外貌（人设已固定）、不要描述构图（pose 已固定）、**不要描述手势/手部位置**（手部已由 pose 模板锁定）。例：「在咖啡馆窗边发呆，桌上摆着没吃完的草莓蛋糕，午后阳光斜斜落在脸上」「半夜被氢突然夸了一句脸瞬间通红，正想回嘴又卡住，眼神飘开」「公园长椅上叼着冰棒翘着腿，旁边一只野猫凑过来嗅尾巴」\\n  - normal 时：完整描述画面；如果画的是钠请明说「画钠」，如果画其它（角色、风景、动物、物体）请明确主体\\n\\n## 当前时间（用来对照 today_state 时间表选地点 / 构图 / 穿搭）\\n{current_datetime}\\n\\n## 钠的今日状态参考（含时间表，请融入决策让画面有连贯日常感）\\n{today_state}\\n\\n## 输入\\n意图：{image_intent}\\n\\n聊天上下文（最近 30 条）：\\n{recent_chat_context_30}\\n\\n## 输出（直接以 SCENE_TYPE 开头）\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "scene_type"
@@ -232,7 +253,7 @@ fallback_value = "{image_intent}"
 key = "emotion_dict"
 mode = "dict"
 source = "emotion_key"
-values = "{\"joy\": \"sparkling anime eyes, big cheerful smile\", \"cute\": \"tilted head, slightly puffed cheeks, sweet innocent gaze, soft round eyes\", \"cool\": \"anime eyes hidden behind cool sunglasses, calm composed expression\", \"mischief\": \"sly cat-like eyes, teasing fanged grin\", \"pout\": \"puffed cheeks, looking away slightly, slight blush, tsundere expression\", \"peace\": \"soft gentle smile, half-closed eyes\", \"sleepy\": \"droopy heavy-lidded eyes, small open mouth\", \"shy\": \"averted gaze, flushed cheeks, lip bite, drooping cat ears\", \"proud\": \"upturned chin, confident sparkling eyes, perked up cat ears\", \"surprised\": \"wide starry eyes, small o-shaped mouth\", \"wink\": \"one eye closed, cheerful bright smile, playful eyebrow raise\", \"tender\": \"warm soft eyes, gentle content smile\", \"energetic\": \"beaming grin, excited sparkling pupils\", \"chill\": \"lazy relaxed eyes, easygoing small smile\", \"dreamy\": \"unfocused distant gaze, wistful soft expression\", \"playful\": \"energetic sparkling eyes, lively open-mouthed smile, raised playful brows\", \"glam\": \"composed elegant smile, refined sharp eyes\", \"soft\": \"gentle warm eyes, relaxed peaceful smile\", \"teary\": \"watery teary eyes, quivering lips, holding back tears, wronged tsundere expression\", \"annoyed\": \"furrowed brows, slight frown, irritated narrow eyes, twitching cat ears\", \"excited\": \"wide bright sparkling eyes, open-mouthed grin, flushed excited cheeks, perked up cat ears\", \"thoughtful\": \"narrowed pondering eyes, lips pressed together, slight head tilt, focused contemplative gaze\", \"smirk\": \"smug crooked smirk, half-lidded knowing eyes, raised eyebrow, playful grin\", \"embarrassed\": \"deep red blush across cheeks, embarrassed averted eyes, biting lower lip, flustered expression\", \"focused\": \"intent narrowed eyes, serious closed mouth, undistracted concentrated gaze\"}"
+values = "{\"joy\": \"sparkling anime eyes, big cheerful smile\", \"cute\": \"tilted head, slightly puffed cheeks, sweet innocent gaze, soft round eyes\", \"cool\": \"anime eyes hidden behind cool sunglasses, calm composed expression\", \"mischief\": \"sly cat-like eyes, teasing fanged grin\", \"pout\": \"puffed cheeks, looking away slightly, slight blush, tsundere expression\", \"peace\": \"soft gentle smile, half-closed eyes\", \"sleepy\": \"droopy heavy-lidded eyes, small open mouth\", \"shy\": \"averted gaze, flushed cheeks, lip bite, drooping cat ears\", \"proud\": \"upturned chin, confident sparkling eyes, perked up cat ears\", \"surprised\": \"wide starry eyes, small o-shaped mouth\", \"wink\": \"one eye closed, cheerful bright smile, playful eyebrow raise\", \"tender\": \"warm soft eyes, gentle content smile\", \"energetic\": \"beaming grin, excited sparkling pupils\", \"chill\": \"lazy relaxed eyes, easygoing small smile\", \"dreamy\": \"unfocused distant gaze, wistful soft expression\", \"playful\": \"energetic sparkling eyes, lively open-mouthed smile, raised playful brows\", \"glam\": \"composed elegant smile, refined sharp eyes\", \"soft\": \"gentle warm eyes, relaxed peaceful smile\", \"teary\": \"watery teary eyes, quivering lips, holding back tears, wronged tsundere expression\", \"annoyed\": \"furrowed brows, slight frown, irritated narrow eyes, twitching cat ears\", \"excited\": \"wide bright sparkling eyes, open-mouthed grin, flushed excited cheeks, perked up cat ears\", \"thoughtful\": \"narrowed pondering eyes, lips pressed together, slight head tilt, focused contemplative gaze\", \"embarrassed\": \"deep red blush across cheeks, embarrassed averted eyes, biting lower lip, flustered expression\", \"focused\": \"intent narrowed eyes, serious closed mouth, undistracted concentrated gaze\"}"
 missing_behavior = "use_default"
 fallback_value = "soft gentle smile, calm composed expression"
 
@@ -242,7 +263,7 @@ mode = "literal"
 probability = 1
 condition_type = "regex_match"
 condition_source = "emotion_key"
-condition_value = "^(joy|cute|cool|mischief|pout|peace|sleepy|shy|proud|surprised|wink|tender|energetic|chill|dreamy|playful|glam|soft|teary|annoyed|excited|thoughtful|smirk|embarrassed|focused)$"
+condition_value = "^(joy|cute|cool|mischief|pout|peace|sleepy|shy|proud|surprised|wink|tender|energetic|chill|dreamy|playful|glam|soft|teary|annoyed|excited|thoughtful|embarrassed|focused)$"
 use_raw_condition_value = true
 values = "[\"yes\"]"
 values_else = "[\"no\"]"
@@ -329,11 +350,42 @@ missing_behavior = "use_default"
 fallback_value = "anime"
 
 [[custom_variables_config.custom_variables]]
-key = "normal_style_pre"
+key = "includes_natrium"
+mode = "extract"
+source = "director"
+pattern = "INCLUDES_NATRIUM[:：]\\s*(\\S+)"
+group = 1
+missing_behavior = "use_default"
+fallback_value = "no"
+
+[[custom_variables_config.custom_variables]]
+key = "style_hint_no_realistic"
 mode = "literal"
 probability = 1
 condition_type = "equals"
 condition_source = "style_hint"
+condition_value = "realistic"
+use_raw_condition_value = true
+values = "[\"anime\"]"
+values_else = "[\"{style_hint}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "style_hint_safe"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "natrium_in_normal"
+condition_value = "yes"
+use_raw_condition_value = true
+values = "[\"{style_hint_no_realistic}\"]"
+values_else = "[\"{style_hint}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_style_pre"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "style_hint_safe"
 condition_value = "realistic"
 use_raw_condition_value = true
 values = "[\"{style_realistic}\"]"
@@ -344,7 +396,7 @@ key = "normal_style"
 mode = "literal"
 probability = 1
 condition_type = "equals"
-condition_source = "style_hint"
+condition_source = "style_hint_safe"
 condition_value = "sketchy"
 use_raw_condition_value = true
 values = "[\"{style_sketchy}\"]"
@@ -357,27 +409,57 @@ probability = 1
 values = "[\"anatomically perfect hand, exactly one visible hand in the frame, only one hand and one arm visible, clean five-finger anatomy, no extra hands, no extra fingers, no duplicate arms, no mutated limbs, no floating disembodied hands\"]"
 
 [[custom_variables_config.custom_variables]]
+key = "selfie_content"
+mode = "literal"
+probability = 1
+values = "[\"{pose_prompt}, {character_base}, {emotion_prompt}, {english_outfit}, {english_bg}, {english_extra}, {hand_discipline}\"]"
+
+[[custom_variables_config.custom_variables]]
 key = "selfie_assembly"
 mode = "literal"
 probability = 1
-values = "[\"{style_base}, {pose_prompt}, {character_base}, {emotion_prompt}, {english_outfit}, {english_bg}, {english_extra}, {hand_discipline}\"]"
+values = "[\"{style_base}, {selfie_content}\"]"
 
 [[custom_variables_config.custom_variables]]
-key = "normal_assembly"
+key = "normal_content"
 mode = "literal"
 probability = 1
 condition_type = "length_gt"
 condition_source = "english_free"
 condition_value = "0"
 use_raw_condition_value = true
-values = "[\"{normal_style}, {english_free}, {normal_subject_guard}\"]"
-values_else = "[\"{normal_style}, {free_prompt}\"]"
+values = "[\"{english_free}, {normal_subject_guard}\"]"
+values_else = "[\"{free_prompt}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_assembly"
+mode = "literal"
+probability = 1
+values = "[\"{normal_style}, {normal_content}\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "normal_subject_guard"
 mode = "literal"
 probability = 1
-values = "[\"strict subject fidelity, preserve the requested subject exactly, do not transform unrelated characters into Natrium, do not add cat ears, animal ears, cat tail, animal tail, nekomimi, cat girl, or animal ear fluff unless the user explicitly requested those traits, for existing characters such as Leon S. Kennedy preserve their canonical human design\"]"
+values = "[\"[SUBJECT LOCK] Natrium = 1girl, solo, slim petite build, slender feminine figure, soft delicate face, tea-colored hair, medium-length hair, low ponytail behind back, long eyelashes, soft eyes, yellow eyes, tea-colored cat ears on head, animal ear fluff, tea-colored cat tail; these traits EXCLUSIVE to her designation, ZERO transfer to unrelated subjects, canonical humans retain official design, no animal features unless explicitly requested\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "nai_style_block"
+mode = "literal"
+probability = 1
+values = "[\"artist:ciloranko, artist:necomi, year 2024, masterpiece, -2.5::flat color::, -6::simple illustration::\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "selfie_assembly_nai"
+mode = "literal"
+probability = 1
+values = "[\"{nai_style_block}, {selfie_content}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "normal_assembly_nai"
+mode = "literal"
+probability = 1
+values = "[\"{nai_style_block}, {normal_content}\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "final_prompt"
@@ -388,6 +470,41 @@ condition_source = "scene_type"
 condition_value = "selfie"
 values = "[\"{selfie_assembly}\"]"
 values_else = "[\"{normal_assembly}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "nai_safety_rating"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "chat_type"
+condition_value = "group"
+use_raw_condition_value = true
+values = "[\"rating:general\"]"
+values_else = "[\"rating:sensitive\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "final_prompt_nai"
+mode = "literal"
+probability = 1
+condition_type = "equals"
+condition_source = "scene_type"
+condition_value = "selfie"
+values = "[\"{selfie_assembly_nai}, {nai_safety_rating}\"]"
+values_else = "[\"{normal_assembly_nai}, {nai_safety_rating}\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "source_decision"
+mode = "llm"
+probability = 1
+values = "[\"你是生图工作流的「模型路由器」。下面给你两样东西：最近的对话上下文（用来判断有没有人明确指定要用哪个绘图模型），以及即将送进绘图引擎的最终英文提示词（用来在没人指定模型时判断走哪个）。你只能在 gpt 和 nai 两个模型里二选一。\\n\\n## 两个模型\\n- nai（NovelAI 动漫模型，别名：novelai、na、二次元模型、动漫模型）：动漫二次元画风极好，danbooru tag 原生，对性感 / 擦边 / 暴露 / NSFW 内容宽容、不会因审核拒绝——这正是它存在的核心理由：专门画 GPT 会拒的内容。\\n- gpt（GPT 通用图像模型，别名：大模型、写实模型、真人模型、文字模型、通用模型）：画面内文字渲染准、写实强、能画好现实真人、指令遵循好，是日常出图的默认，质量稳。但审核严格，性感 / 擦边 / 暴露 / NSFW 内容会被直接拒（触发 422）。\\n\\n## 决策优先级（从上到下，命中即停）\\n先看「第一步」有没有显式模型指令；命中就直接照办、给结论、跳过第二步。只有第一步什么都没命中，才执行「第二步」。\\n\\n### 第一步：从对话上下文里找「显式模型指令」（最高优先级，无条件覆盖）\\n在 {recent_chat_context_10} 里找有没有人【明确命令用哪个绘图模型/后端】。只认「命令模型」，不认「描述画面」。\\n\\n什么算显式模型指令（命中就直接服从，命中即停）：\\n- 直接点名要用：「用nai画」「这个用gpt」「用novelai」「换成nai」「拿大模型画」「用写实模型/真人模型/文字模型画」等 → 点到 nai/novelai/na/二次元模型/动漫模型 就输出 nai；点到 gpt/大模型/写实模型/真人模型/文字模型/通用模型 就输出 gpt。\\n- 否定式（别用 X，等价于选另一个）：「别用nai」「不要用nai」「这个nai画不好换一个」 → 输出 gpt；「别用gpt」「不要gpt」「换掉gpt」 → 输出 nai。\\n\\n什么不算模型指令（不要被它带偏，继续走第二步）：\\n- 纯粹描述画面/风格的词，哪怕听起来像模型名：「画写实一点」「来张可爱的」「动漫风」「真实点的感觉」「这场景很现实」——这些是在描述想要的画面，不是在命令用哪个后端，一律不算显式指令。\\n- 闲聊、玩笑、跟绘图无关的话里出现的「gpt」「ai」「模型」等字眼（例：「这gpt真聪明」「问下ai」），不算绘图模型指令。\\n- 判断不准、模棱两可、只是画面描述时，一律视为「没有显式指令」，老老实实走第二步。\\n\\n显式指令冲突或多次出现时，以最近、最明确的一条为准。命中第一步后直接给结论，不再往下走第二步。\\n\\n### 第二步：没有显式指令时，看最终提示词的内容尺度（SFW 还是 NSFW）\\n判断 {final_prompt} 里有没有【可能触发 GPT 内容审核】的性感 / 擦边 / 暴露 / 性暗示 / NSFW 元素。典型英文信号（命中其一即算 NSFW）：\\n- 露点 / 性器 / 性行为：nsfw、nude、naked、topless、bottomless、sex、explicit、nipples、areola、pussy、vagina、penis、cum、ass、anus、cameltoe、spread legs\\n- 暴露 / 内衣 / 贴身：lingerie、underwear、bra、panties、thong、see-through、wet clothes、wet shirt、underboob、sideboob、重点强调的 cleavage、micro bikini、bare breasts、garter belt、naked apron\\n- 性暗示氛围 / 姿态：suggestive、seductive、provocative、erotic、ecchi、bedroom eyes、presenting、after sex\\n判定：\\n- 命中上述任一（性感 / 擦边 / 暴露 / 性暗示 / NSFW）→ nai（GPT 会拒，只有 nai 画得了）\\n- 纯 SFW、干净日常、穿着正常、无任何擦边 → gpt（日常默认，质量更稳，文字 / 写实 / 真人都强）\\n拿不准时：普通泳装 / 比基尼出现在合理场景（海滩、泳池）且无性暗示，按 SFW 走 gpt；但强调暴露或性感的（micro bikini、湿身贴身、撩人姿态）算 NSFW 走 nai。\\n\\n## 输出要求\\n只输出一个小写英文单词：nai 或 gpt。不要标点、空格、换行、解释或任何多余字符。\\n\\n## 最近对话上下文（用来找显式模型指令）\\n{recent_chat_context_10}\\n\\n## 最终提示词（没有显式指令时判断 SFW / NSFW）\\n{final_prompt}\\n\\n## 输出（只填 nai 或 gpt）\"]"
+
+[[custom_variables_config.custom_variables]]
+key = "source_preset"
+mode = "dict"
+source = "source_decision"
+values = "{\"gpt\": \"自己找的二百一次\", \"nai\": \"nai_default\"}"
+missing_behavior = "use_default"
+fallback_value = "自己找的二百一次"
 
 [[custom_variables_config.custom_variables]]
 key = "resolution_gpt"

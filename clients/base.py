@@ -1,24 +1,53 @@
 from __future__ import annotations
 
+import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import unquote_to_bytes
 
 import httpx
 
 
-@dataclass
+@dataclass(repr=False)
 class BizyAirImageResult:
     """统一的图片结果对象。"""
 
     image_url: str
 
+    def __repr__(self) -> str:
+        """安全 repr：data URL / 超长 URL 一律截断，避免把整张图的 base64 打进日志撑爆。
+
+        NAI Chat 后端返回的是内联 data:image/png;base64,<整张图> 的 data URL，
+        默认 dataclass repr 会把它整个打出来。这里统一截断。
+        """
+        url = self.image_url
+        if isinstance(url, str) and url.startswith("data:"):
+            prefix = url.split(",", 1)[0]
+            return f"BizyAirImageResult(image_url='{prefix},<{len(url)} chars base64 omitted>')"
+        if isinstance(url, str) and len(url) > 256:
+            return f"BizyAirImageResult(image_url={url[:80]!r}…<{len(url)} chars, truncated>)"
+        return f"BizyAirImageResult(image_url={url!r})"
+
     async def download_bytes(self, timeout: float = 180.0) -> bytes:
+        # data URL（NAI Chat 后端把整张图内联返回）：图片就在 URL 里，直接解码，不能也不必走 HTTP
+        if isinstance(self.image_url, str) and self.image_url.startswith("data:"):
+            return self._decode_data_url(self.image_url)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(self.image_url, timeout=timeout)
             response.raise_for_status()
             return response.content
+
+    @staticmethod
+    def _decode_data_url(data_url: str) -> bytes:
+        """解码 data: URL 的图片字节（支持 base64 与百分号编码两种 payload）。"""
+        header, sep, payload = data_url.partition(",")
+        if not sep:
+            raise ValueError("非法 data URL：缺少逗号分隔的 payload")
+        if ";base64" in header.lower():
+            return base64.b64decode(payload)
+        return unquote_to_bytes(payload)
 
     async def save_to_file(self, file_path: str | Path, timeout: float = 180.0) -> Path:
         data = await self.download_bytes(timeout=timeout)
