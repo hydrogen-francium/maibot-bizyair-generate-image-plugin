@@ -191,6 +191,9 @@ class GenerateImageAction(BaseAction):
                 f"binding_fields={[str(item.get('field', '')).strip() for item in parameter_bindings_config if isinstance(item, dict)]}"
             )
 
+            if provider == "nai_chat":
+                template_context["nai_reference_image"] = self._pick_random_reference_image() or ""
+
             failure_stage = "build_provider_payload"
             provider_payload, timeout = await self._build_provider_payload(
                 provider=provider,
@@ -589,6 +592,34 @@ class GenerateImageAction(BaseAction):
         image_size_mb = len(image_bytes) / (1024 * 1024)
         logger.info(f"{self.log_prefix} 图片下载完成，已获取图片数据: size={image_size_mb:.2f}MB, download_time={download_time:.2f}s")
         return image_bytes
+
+    def _pick_random_reference_image(self) -> Optional[str]:
+        """从 reference_images_dir 随机挑一张图片，返回 base64 字符串；目录为空或不存在则返回 None。"""
+        import os
+        import random
+
+        ref_dir = self.get_config("bizyair_generate_image_plugin.reference_images_dir", "")
+        if not ref_dir:
+            return None
+
+        plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        abs_dir = os.path.join(plugin_root, ref_dir) if not os.path.isabs(ref_dir) else ref_dir
+        if not os.path.isdir(abs_dir):
+            logger.debug(f"{self.log_prefix} reference_images_dir 不存在: {abs_dir}")
+            return None
+
+        valid_exts = {".png", ".jpg", ".jpeg", ".webp"}
+        candidates = [f for f in os.listdir(abs_dir) if os.path.splitext(f)[1].lower() in valid_exts]
+        if not candidates:
+            logger.debug(f"{self.log_prefix} reference_images_dir 为空: {abs_dir}")
+            return None
+
+        chosen = random.choice(candidates)
+        filepath = os.path.join(abs_dir, chosen)
+        with open(filepath, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        logger.info(f"{self.log_prefix} NAI 参考图已选取: {chosen} ({len(b64)} chars base64)")
+        return b64
 
     def _build_action_display(self, action_inputs: dict[str, Any]) -> str:
         """构造写入动作记录的简短展示文本"""

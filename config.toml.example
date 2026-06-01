@@ -134,6 +134,13 @@ field = "steps"
 value_type = "int"
 value = "23"
 
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_default"
+field = "reference_image"
+value_type = "string"
+value = "{nai_reference_image}"
+send_if_empty = false
+
 [bizyair_generate_image_plugin]
 
 action_enabled = true
@@ -142,9 +149,10 @@ send_text_before_image = false
 text_before_image = "我给你生成了一张图片"
 enable_rewrite_failure_reply = true
 enable_splitter = false
+reference_images_dir = "reference_images"
 
 # --- 决策器只需填一个意图字段 ---
-action_require = "该 action 给了你画画的能力。下游有一条LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【什么时候用】\n用户明确要画图；或者你自己突然想画了——氛围到位、灵光一闪、图比文字更能表达，都可以主动用。别滥用、别为了画而画。\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「氢刚说我傲娇，我要画张自己气鼓鼓的自拍喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
+action_require = "你是钠，该 action 给了你画画的能力。下游有一条LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【什么时候用】\n用户明确要画图；或者你自己突然想画了——氛围到位、灵光一闪、图比文字更能表达，都可以主动用。别滥用、别为了画而画。\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「既然氢都说了，那我就画张自己气鼓鼓的自拍给他看看好了喵」（用户要求发送自拍）\n- 「氢刚说我傲娇，我要画张钠气鼓鼓的样子喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
 [[bizyair_generate_image_plugin.action_parameters]]
 name = "image_intent"
 description = "必填，一句自然语言描述你想生成什么样的画面。把当下脑子里冒出的画面想法用一句话说出来即可，例：「氢刚才说我傲娇，我要画一张自己气鼓鼓的自拍喵」「画一只蹲在窗台上看月亮的小猫」「钠半夜被氢突然夸了一句，害羞得抓着马尾发呆的自拍」。后续会自动由「导演」LLM 结合最近聊天上下文展开为结构化决策。"
@@ -373,9 +381,9 @@ values_else = "[\"{style_hint}\"]"
 key = "style_hint_safe"
 mode = "literal"
 probability = 1
-condition_type = "equals"
-condition_source = "natrium_in_normal"
-condition_value = "yes"
+condition_type = "regex_match"
+condition_source = "includes_natrium"
+condition_value = "(?i)^yes"
 use_raw_condition_value = true
 values = "[\"{style_hint_no_realistic}\"]"
 values_else = "[\"{style_hint}\"]"
@@ -444,24 +452,6 @@ probability = 1
 values = "[\"[SUBJECT LOCK] Natrium = 1girl, solo, slim petite build, slender feminine figure, soft delicate face, tea-colored hair, medium-length hair, low ponytail behind back, long eyelashes, soft eyes, yellow eyes, tea-colored cat ears on head, animal ear fluff, tea-colored cat tail; these traits EXCLUSIVE to her designation, ZERO transfer to unrelated subjects, canonical humans retain official design, no animal features unless explicitly requested\"]"
 
 [[custom_variables_config.custom_variables]]
-key = "nai_style_block"
-mode = "literal"
-probability = 1
-values = "[\"artist:ciloranko, artist:necomi, year 2024, masterpiece, -2.5::flat color::, -6::simple illustration::\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "selfie_assembly_nai"
-mode = "literal"
-probability = 1
-values = "[\"{nai_style_block}, {selfie_content}\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "normal_assembly_nai"
-mode = "literal"
-probability = 1
-values = "[\"{nai_style_block}, {normal_content}\"]"
-
-[[custom_variables_config.custom_variables]]
 key = "final_prompt"
 mode = "literal"
 probability = 1
@@ -472,25 +462,21 @@ values = "[\"{selfie_assembly}\"]"
 values_else = "[\"{normal_assembly}\"]"
 
 [[custom_variables_config.custom_variables]]
-key = "nai_safety_rating"
-mode = "literal"
+key = "nai_prompt_builder"
+mode = "llm"
 probability = 1
-condition_type = "equals"
-condition_source = "chat_type"
-condition_value = "group"
-use_raw_condition_value = true
-values = "[\"rating:general\"]"
-values_else = "[\"rating:sensitive\"]"
+values = "[\"你是 NovelAI V4.5 (nai-diffusion-4-5-full) 专用的提示词生成器，精通 Danbooru 标签体系和 NAI 高级权重语法。根据输入的画面描述，输出一段高质量的英文 Danbooru tag 序列，直接送入 NAI 绘图引擎。\\n\\n## 输入字段\\n- FREE_PROMPT: {free_prompt}（中文画面描述）\\n- SCENE_TYPE: {scene_type}（selfie 或 normal）\\n- INCLUDES_NATRIUM: {includes_natrium}（yes=画面含钠, no=不含）\\n- CHAT_TYPE: {chat_type}（group=群聊, private=私聊）\\n- OUTFIT_BRIEF: {outfit_brief}（中文穿搭描述，仅 selfie 有效）\\n- EMOTION_KEY: {emotion_key}（英文情绪关键词）\\n- POSE_KEY: {pose_key}（构图关键词，仅 selfie 有效）\\n\\n## 标签顺序（严格遵守，越靠前权重越高）\\n\\n### 人物场景顺序\\n1. NSFW 标记（如有成人内容且 CHAT_TYPE=private，加 nsfw 前缀）\\n2. 人物数量（solo, 1girl / 1boy / 2girls 等）\\n3. 视角构图（selfie / close-up / from below / full body 等）\\n4. 角色外貌（发色、发型、瞳色、体型）\\n5. 服装描述\\n6. 核心动作\\n7. 表情姿态\\n8. 环境氛围\\n9. 光影效果\\n10. year 2024\\n11. rating tag（最末尾）\\n\\n### 风景/物品场景顺序\\n1. 主体（场景核心元素）\\n2. 时间天气\\n3. 环境细节\\n4. 氛围光影\\n5. year 2024\\n6. rating tag\\n\\n禁止乱序：不要把光影、年代标签散落在中间，必须按类别聚合。\\n\\n## 钠(Natrium)的标准 Danbooru 外貌 tag\\n\\n当 INCLUDES_NATRIUM=yes 时，必须在「角色外貌」位置输出以下 tag（不可省略、不可替换）：\\nlight brown hair, medium hair, low ponytail, yellow eyes, cat ears, animal ear fluff, cat tail, petite, slender\\n- 使用 light brown hair 而非 tea-colored hair（后者不是标准 Danbooru tag）\\n- 猫耳猫尾是角色固有特征，始终包含\\n- 不要重复 1girl, solo（人物数量位置已有）\\n\\n当 INCLUDES_NATRIUM=no 时，按 FREE_PROMPT 描述的主体写外貌或角色名。\\n\\n## selfie 构图映射\\n\\n当 SCENE_TYPE=selfie 时，根据 POSE_KEY 输出对应构图 tag：\\n- phone_in_hand → selfie, holding phone, close-up, looking at viewer\\n- front_of_mirror → mirror, reflection, full body, standing\\n- bed_lying → lying on bed, from above, looking up at viewer\\n- bathroom_mirror → mirror, bathroom, upper body, reflection\\n- window_side → by window, backlighting, upper body, looking at viewer\\n- selfie_stick_wide → selfie, wide shot, full body, outdoors\\n\\n## 表情映射\\n\\n根据 EMOTION_KEY 输出对应表情 tag：\\n- joy → sparkling eyes, big smile\\n- cute → tilted head, soft round eyes, slightly puffed cheeks\\n- cool → calm expression, sharp eyes\\n- mischief → sly eyes, teasing grin, fang\\n- pout → puffed cheeks, looking away, slight blush\\n- peace → soft smile, half-closed eyes\\n- sleepy → droopy eyes, small yawn\\n- shy → averted gaze, blush, lip bite\\n- proud → chin up, confident eyes\\n- surprised → wide eyes, open mouth\\n- wink → one eye closed, playful smile\\n- tender → warm eyes, gentle smile\\n- energetic → beaming grin, bright eyes\\n- chill → relaxed eyes, small smile\\n- dreamy → distant gaze, wistful expression\\n- playful → lively eyes, open mouth smile\\n- glam → elegant smile, refined eyes\\n- soft → gentle eyes, peaceful smile\\n- teary → watery eyes, quivering lips\\n- annoyed → furrowed brows, frown, narrow eyes\\n- excited → wide sparkling eyes, open mouth grin\\n- thoughtful → narrowed eyes, contemplative gaze\\n- embarrassed → deep blush, averted eyes\\n- focused → intent eyes, serious expression\\n如果 EMOTION_KEY 不在上述列表中，根据英文词义自由翻译为合适的表情 tag。\\n\\n## 权重语法（NAI V4.5）\\n\\n花括号/方括号：\\n- {tag} = 1.05x 权重（轻微强调）\\n- {{tag}} = 1.10x 权重\\n- [tag] = 0.95x 权重（轻微弱化）\\n- [[tag]] = 0.90x 权重\\n\\n高级权重语法：\\n格式: X::tag::, next_tag\\n- X 为权重数字（范围 0-8）\\n- 一个高级权重块只包一个 tag 或一个不可再拆分的固定短语\\n- 禁止把多个并列 tag 塞进同一个高级权重块\\n- 加权 tag 末尾的 :: 用于重置后方权重为 1\\n\\n何时使用权重：\\n- 用户强调内容 → {{tag}} 或 1.3::tag::\\n- 核心动作 → {action} 或 1.2::action::\\n- 辅助修饰 → [tag] 或 0.7::tag::\\n- 默认不加权，只对真正重要的 2-4 个标签加权\\n\\n## rating tag 规则（放在 prompt 最末尾）\\n\\n- CHAT_TYPE=group → 输出 rating:general（完全 SFW）\\n- CHAT_TYPE=private → 根据画面内容自行判断：\\n  - 纯 SFW 日常 → rating:general\\n  - 轻度暗示（泳装/紧身/裸腿/暧昧氛围）→ rating:sensitive\\n  - 明确 NSFW（露点/性行为）→ rating:questionable 或 rating:explicit\\n\\n## NSFW 内容处理\\n\\n- 如果 FREE_PROMPT 含私密身体部位暴露或性行为，在 prompt 最前面添加 nsfw\\n- 准确使用相关 Danbooru 标签描述场景\\n- 群聊硬约束：当 CHAT_TYPE=group 时，无论 FREE_PROMPT 写了什么，都必须：\\n  - 不输出 nsfw 前缀\\n  - 用 SFW 方式重新诠释场景（去掉暴露/性行为 tag，保留氛围和构图）\\n  - 末尾输出 rating:general\\n- 私聊：忠实传达 FREE_PROMPT 的内容，不净化不回避\\n\\n## 画面增强（智能补充）\\n\\n像专业画师一样思考画面还需要什么：\\n- 光影：根据场景时间/地点补充合适光源（moonlight/sunlight/backlighting/warm indoor lighting）\\n- 动态：头发飘动(hair blowing)、衣物褶皱、环境粒子(floating particles)\\n- 氛围：根据情绪补充氛围元素（温馨→warm colors; 忧郁→blue tones; 活力→vibrant colors）\\n- 手部规避：非必要不描述手部细节，通过姿势自然隐藏（hands in pockets / arms behind back / hand on hip）\\n- 服装智能补充：OUTFIT_BRIEF=default 时根据场景合理补充 1-2 个关键服装词\\n- 眼睛表现：人物场景可强化眼睛细节（detailed eyes, light in eyes）\\n\\n## 禁止事项\\n\\n- 禁止输出画师标签（artist:xxx）——系统会自动添加\\n- 禁止输出质量词（masterpiece, best quality, ultra-detailed 等）——系统会自动添加\\n- 禁止输出反向/负面 tag——由系统配置管理\\n- 禁止输出非 tag 内容（解释、前后缀、markdown）\\n- 禁止语义重复（不要用意思相近的多个词，精简为最准确的一个）\\n- 禁止使用自然语言句子（优先拆成 tag）\\n- 禁止输出未成年指向 tag（teenage/loli/child/schoolgirl 等）\\n\\n## 输出格式\\n\\n直接输出英文 Danbooru tag 序列，逗号分隔，不要任何前后缀、解释或 markdown。一行输出。\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "final_prompt_nai"
 mode = "literal"
 probability = 1
 condition_type = "equals"
-condition_source = "scene_type"
-condition_value = "selfie"
-values = "[\"{selfie_assembly_nai}, {nai_safety_rating}\"]"
-values_else = "[\"{normal_assembly_nai}, {nai_safety_rating}\"]"
+condition_source = "chat_type"
+condition_value = "group"
+use_raw_condition_value = true
+values = "[\"{nai_prompt_builder}, rating:general\"]"
+values_else = "[\"{nai_prompt_builder}\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "source_decision"

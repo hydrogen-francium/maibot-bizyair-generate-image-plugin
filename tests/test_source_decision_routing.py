@@ -70,15 +70,9 @@ def test_routing_variables_defined(custom_variables: list):
     keys = {v["key"] for v in custom_variables}
     assert "source_decision" in keys
     assert "source_preset" in keys
-    # NAI 专用画风路径变量
-    assert "nai_style_block" in keys
-    assert "selfie_content" in keys
-    assert "normal_content" in keys
-    assert "selfie_assembly_nai" in keys
-    assert "normal_assembly_nai" in keys
+    # NAI 独立 LLM 翻译器路径
+    assert "nai_prompt_builder" in keys
     assert "final_prompt_nai" in keys
-    # 群聊/私聊 SFW 守卫变量（坍缩后只剩一个：直接由 chat_type 决定 general/sensitive）
-    assert "nai_safety_rating" in keys
 
 
 def test_dependency_graph_has_no_cycle(config: dict, custom_variables: list):
@@ -149,48 +143,44 @@ def test_nai_binding_uses_painterly_prompt(config: dict):
     assert all(m.get("value") != "{final_prompt}" for m in mappings)
 
 
-def test_nai_style_block_has_painterly_artist_string(custom_variables: list):
-    """nai_style_block 承载厚涂画师串 + V4.5 反扁平负向杠杆。"""
-    nsb = next(v for v in custom_variables if v["key"] == "nai_style_block")
-    raw = nsb["values"]
-    assert "artist:ciloranko" in raw  # 主导画师，无括号最高权重
-    assert "artist:" in raw  # 至少一个 artist: 前缀的画师标签
-    assert "flat color" in raw  # -2.5::flat color:: 反 cel-shade 杠杆
-    assert "masterpiece" in raw
+def test_nai_prompt_builder_is_llm_with_required_inputs(custom_variables: list):
+    """nai_prompt_builder 是独立 LLM 变量，prompt 中引用了所有必要输入字段。"""
+    npb = next(v for v in custom_variables if v["key"] == "nai_prompt_builder")
+    assert npb["mode"] == "llm"
+    prompt = npb["values"][0] if isinstance(npb["values"], list) else npb["values"]
+    for field in ("{free_prompt}", "{scene_type}", "{includes_natrium}", "{chat_type}",
+                  "{outfit_brief}", "{emotion_key}", "{pose_key}"):
+        assert field in prompt, f"nai_prompt_builder prompt 缺少 {field}"
+    # 禁止输出 artist（系统自动添加）
+    assert "禁止" in prompt and "artist" in prompt
 
 
 def test_final_prompt_nai_closure(config: dict, custom_variables: list):
-    """NAI 绑定 {final_prompt_nai} 的依赖闭包应拉到画师串块与共享内容变量。"""
+    """NAI 绑定 {final_prompt_nai} 的依赖闭包应拉到 nai_prompt_builder。"""
     _, required_keys = _build_resolver(config, custom_variables)
     for key in (
         "final_prompt_nai",
-        "selfie_assembly_nai",
-        "normal_assembly_nai",
-        "nai_style_block",
-        "selfie_content",
-        "normal_content",
-        # 尾部 SFW 守卫坍缩为单变量：final_prompt_nai → nai_safety_rating（直接读 chat_type）
-        "nai_safety_rating",
+        "nai_prompt_builder",
     ):
         assert key in required_keys, f"{key} 不在依赖闭包内"
 
 
-def test_gpt_and_nai_paths_share_content_not_style(custom_variables: list):
-    """GPT 走 style_base、NAI 走 nai_style_block，但两者共用同一份内容（selfie_content/normal_content）。"""
-    by_key = {v["key"]: v for v in custom_variables}
-    # selfie：GPT 版前缀 style_base，NAI 版前缀 nai_style_block，内容同为 selfie_content
-    assert "{style_base}, {selfie_content}" in by_key["selfie_assembly"]["values"]
-    assert "{nai_style_block}, {selfie_content}" in by_key["selfie_assembly_nai"]["values"]
-    # normal：同理，内容同为 normal_content
-    assert "{normal_style}, {normal_content}" in by_key["normal_assembly"]["values"]
-    assert "{nai_style_block}, {normal_content}" in by_key["normal_assembly_nai"]["values"]
+def test_nai_path_independent_from_gpt(custom_variables: list):
+    """NAI 路径(nai_prompt_builder)不再依赖 GPT 的 selfie_content/normal_content/style_base。"""
+    npb = next(v for v in custom_variables if v["key"] == "nai_prompt_builder")
+    prompt = npb["values"][0] if isinstance(npb["values"], list) else npb["values"]
+    for gpt_var in ("{selfie_content}", "{normal_content}", "{style_base}",
+                    "{normal_style}", "{character_base}", "{hand_discipline}"):
+        assert gpt_var not in prompt, f"nai_prompt_builder 不应引用 GPT 变量 {gpt_var}"
 
 
-def test_final_prompt_nai_appends_safety_rating(custom_variables: list):
-    """final_prompt_nai 两个分支都必须在尾部带上 SFW 守卫 rating。"""
+def test_final_prompt_nai_group_appends_rating(custom_variables: list):
+    """final_prompt_nai 群聊分支硬追加 rating:general；私聊分支只用 nai_prompt_builder。"""
     fp = next(v for v in custom_variables if v["key"] == "final_prompt_nai")
-    assert "{nai_safety_rating}" in fp["values"]
-    assert "{nai_safety_rating}" in fp["values_else"]
+    assert "rating:general" in fp["values"]
+    assert "{nai_prompt_builder}" in fp["values"]
+    assert "{nai_prompt_builder}" in fp["values_else"]
+    assert "rating:general" not in fp["values_else"]
 
 
 def test_chat_type_builtin_reflects_is_group():
@@ -202,36 +192,9 @@ def test_chat_type_builtin_reflects_is_group():
     assert private.build_placeholder_values({"chat_type"}) == {"{chat_type}": "private"}
 
 
-@pytest.mark.asyncio
-async def test_nai_safety_rating_matrix(custom_variables: list):
-    """守卫坍缩后的矩阵：只看 chat_type，群聊 → general，私聊 → sensitive。
-
-    钠不再焊死 SFW（私聊允许 sensitive）；NSFW 仍由 source_decision 与 NAI 自身把关。
-    """
-    from unittest.mock import AsyncMock
-
-    registry = CustomVariableRegistry(
-        raw_variables=custom_variables,
-        action_parameter_names=ACTION_PARAMETER_NAMES,
-    )
-    all_defs = registry.variable_definitions
-    safety_defs = {"nai_safety_rating": all_defs["nai_safety_rating"]}
-
-    async def rating(*, is_group: bool) -> str:
-        resolver = VariableDependencyResolver(
-            action_inputs={},
-            custom_variable_definitions=safety_defs,
-            action_parameter_names=set(),
-            builtin_names=BuiltinVariableProvider.get_default_variable_names(),
-            required_custom_variable_keys={"nai_safety_rating"},
-        )
-        provider = BuiltinVariableProvider(chat_id="t", is_group=is_group)
-        _, cv = await resolver.resolve_all(
-            builtin_placeholder_values={},
-            llm_value_factory=AsyncMock(),
-            builtin_variable_provider=provider,
-        )
-        return cv["nai_safety_rating"]
-
-    assert await rating(is_group=True) == "rating:general"
-    assert await rating(is_group=False) == "rating:sensitive"
+def test_style_hint_safe_reads_includes_natrium(custom_variables: list):
+    """style_hint_safe 的 condition_source 必须是 includes_natrium（而非已删的 natrium_in_normal）。"""
+    shs = next(v for v in custom_variables if v["key"] == "style_hint_safe")
+    assert shs["condition_source"] == "includes_natrium"
+    assert shs["condition_type"] == "regex_match"
+    assert "yes" in shs["condition_value"].lower()
