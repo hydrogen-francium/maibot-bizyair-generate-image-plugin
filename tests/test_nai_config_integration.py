@@ -178,7 +178,7 @@ class TestNaiConfigIntegration:
         assert "(作品)" in template
         assert "主体识别" in template
         # 钠人设锚点（画钠时套）
-        assert "tea-colored cat ears" in template
+        assert "light brown cat ears" in template
         # 单花括号注入占位符之外，不应残留会被误当变量替换的真实变量名（防回潮）
         assert "{final_prompt}" not in template
         assert "{nai_director}" not in template
