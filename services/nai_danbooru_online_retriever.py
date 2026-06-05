@@ -107,6 +107,10 @@ class DanbooruOnlineRetriever:
             }
             for item in search_resp["results"]
         ]
+        # 硬截断：API 不严格遵守 limit（实测传 30 仍返回 50+），在此按 search_limit 兜底截断，
+        # 防止 tag_candidates 过长撑爆 nai_director 输入（输入超长疑似诱发上游模型空响应）。
+        if self.search_limit and len(search_results) > self.search_limit:
+            search_results = search_results[: self.search_limit]
 
         # 第二步：取 top-N 标签作为种子，获取共现推荐
         seed_tags = [r["tag"] for r in search_results[:self.related_seed_count]]
@@ -131,6 +135,9 @@ class DanbooruOnlineRetriever:
                     for item in related_resp
                     if item["tag"] not in search_tag_set
                 ]
+                # 硬截断：同 search，去重后按 related_limit 兜底截断
+                if self.related_limit and len(related_results) > self.related_limit:
+                    related_results = related_results[: self.related_limit]
 
         logger.info(
             f"DanbooruOnline 检索完成：query='{query[:30]}' → "

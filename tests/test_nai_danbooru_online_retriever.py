@@ -103,6 +103,36 @@ class TestRetrieve:
         await r.retrieve("x")
         assert r.client.related_calls[0][0] == ["t0", "t1"]
 
+    @pytest.mark.asyncio
+    async def test_search_results_hard_truncated_to_search_limit(self):
+        # API 不严格遵守 limit（实测传 30 仍返回更多），retriever 按 search_limit 硬截断兜底
+        r = DanbooruOnlineRetriever(search_limit=3, related_seed_count=2)
+        r.client = _FakeClient(
+            search_resp={"results": [
+                {"tag": f"s{i}", "cn_name": "", "final_score": 0.9 - i * 0.05} for i in range(20)
+            ]},
+            related_resp=[],
+        )
+        out = await r.retrieve("x")
+        assert len(out["search"]) == 3                      # 截到 search_limit
+        assert [x["tag"] for x in out["search"]] == ["s0", "s1", "s2"]
+        # 种子仍从截断后的前 related_seed_count 取
+        assert r.client.related_calls[0][0] == ["s0", "s1"]
+
+    @pytest.mark.asyncio
+    async def test_related_results_hard_truncated_to_related_limit(self):
+        # related 去重后按 related_limit 硬截断
+        r = DanbooruOnlineRetriever(search_limit=50, related_limit=2, related_seed_count=1)
+        r.client = _FakeClient(
+            search_resp={"results": [{"tag": "seed", "final_score": 0.9}]},
+            related_resp=[
+                {"tag": f"r{i}", "cooc_score": 0.5 - i * 0.01} for i in range(10)
+            ],
+        )
+        out = await r.retrieve("x")
+        assert len(out["related"]) == 2                      # 截到 related_limit
+        assert [x["tag"] for x in out["related"]] == ["r0", "r1"]
+
 
 class TestFormatCandidates:
     def test_two_sections(self):
