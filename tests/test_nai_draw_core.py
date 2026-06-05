@@ -19,7 +19,18 @@ import pytest
 from unittest.mock import AsyncMock
 
 from services.action_parameter_utils import build_action_parameters
-from services.nai_draw_core import DrawPayload, inject_tag_candidates, resolve_to_payload
+from services.nai_draw_core import (
+    DrawPayload,
+    inject_previous_context,
+    inject_tag_candidates,
+    record_previous_context,
+    resolve_to_payload,
+)
+from services.nai_prompt_memory import (
+    get_last_nai_context,
+    reset_prompt_memory,
+    set_last_nai_context,
+)
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
@@ -500,3 +511,114 @@ class TestInjectTagCandidates:
         action_inputs = {"image_intent": "画猫娘"}
         await inject_tag_candidates(self._get_config(True), action_inputs)
         assert action_inputs["tag_candidates"] == ""
+
+
+class TestInjectPreviousContext:
+    """inject_previous_context 单元测试：读会话态 → 伪注入 {previous_prompt_context}（纯内存，零网络）。"""
+
+    @staticmethod
+    def _cfg(enabled, ttl=3600):
+        c = {"enabled": enabled, "inherit_ttl": ttl}
+        return lambda k, d=None: (c if k == "prompt_continuity" else d)
+
+    def setup_method(self):
+        reset_prompt_memory()
+
+    def teardown_method(self):
+        reset_prompt_memory()
+
+    def test_injects_block_when_previous_exists(self):
+        set_last_nai_context("c1", "solo, 1girl, smile", "画个女孩")
+        ai = {}
+        inject_previous_context(self._cfg(True), ai, "c1")
+        block = ai["previous_prompt_context"]
+        assert "solo, 1girl, smile" in block
+        assert "微调" in block and "换角色保场景" in block
+
+    def test_placeholder_block_when_no_previous(self):
+        ai = {}
+        inject_previous_context(self._cfg(True), ai, "c_new")
+        assert "无上一轮提示词" in ai["previous_prompt_context"]
+
+    def test_skips_when_nai_raw_tags_present(self):
+        # /nai0 直发：director 旁路 → 续承旁路，置空串
+        set_last_nai_context("c1", "solo", "x")
+        ai = {"nai_raw_tags": "1girl, solo"}
+        inject_previous_context(self._cfg(True), ai, "c1")
+        assert ai["previous_prompt_context"] == ""
+
+    def test_skips_when_disabled(self):
+        set_last_nai_context("c1", "solo", "x")
+        ai = {}
+        inject_previous_context(self._cfg(False), ai, "c1")
+        assert ai["previous_prompt_context"] == ""
+
+    def test_always_sets_key(self):
+        ai = {}
+        inject_previous_context(self._cfg(False), ai, "c1")
+        assert "previous_prompt_context" in ai
+
+    def test_failsafe_on_exception(self, monkeypatch):
+        # 渲染抛异常 → 降级空串，不向上抛
+        def _boom(*a, **k):
+            raise RuntimeError("boom")
+        monkeypatch.setattr("services.nai_prompt_memory.render_previous_prompt_block", _boom)
+        set_last_nai_context("c1", "solo", "x")
+        ai = {}
+        inject_previous_context(self._cfg(True), ai, "c1")
+        assert ai["previous_prompt_context"] == ""
+
+
+class TestRecordPreviousContext:
+    """record_previous_context 单元测试：出图成功后写回本轮 nai_director 输出。"""
+
+    @staticmethod
+    def _cfg(enabled):
+        c = {"enabled": enabled, "inherit_ttl": 3600}
+        return lambda k, d=None: (c if k == "prompt_continuity" else d)
+
+    @staticmethod
+    def _payload(director_output):
+        return DrawPayload(
+            provider="nai_chat",
+            resolved_preset={},
+            provider_payload={},
+            timeout=1.0,
+            template_context=({"nai_director": director_output} if director_output is not None else {}),
+        )
+
+    def setup_method(self):
+        reset_prompt_memory()
+
+    def teardown_method(self):
+        reset_prompt_memory()
+
+    def test_records_director_output(self):
+        record_previous_context(
+            self._cfg(True), self._payload("solo, 1girl, classroom"), {"image_intent": "画教室"}, "c1"
+        )
+        p, r = get_last_nai_context("c1")
+        assert p == "solo, 1girl, classroom"
+        assert r == "画教室"
+
+    def test_skips_nai0(self):
+        record_previous_context(self._cfg(True), self._payload("x"), {"nai_raw_tags": "1girl"}, "c1")
+        assert get_last_nai_context("c1") == (None, None)
+
+    def test_skips_when_disabled(self):
+        record_previous_context(self._cfg(False), self._payload("x"), {"image_intent": "y"}, "c1")
+        assert get_last_nai_context("c1") == (None, None)
+
+    def test_skips_empty_director(self):
+        record_previous_context(self._cfg(True), self._payload(""), {"image_intent": "y"}, "c1")
+        assert get_last_nai_context("c1") == (None, None)
+
+    def test_round_trip_record_then_inject(self):
+        # 写回 → 下一轮注入能读到（端到端续承闭环）
+        record_previous_context(
+            self._cfg(True), self._payload("solo, 1girl, beach"), {"image_intent": "画沙滩"}, "c1"
+        )
+        ai = {}
+        inject_previous_context(self._cfg(True), ai, "c1")
+        assert "solo, 1girl, beach" in ai["previous_prompt_context"]
+        assert "画沙滩" in ai["previous_prompt_context"]

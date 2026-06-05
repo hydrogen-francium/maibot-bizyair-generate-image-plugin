@@ -99,6 +99,7 @@ def _setup_plugin_package() -> None:
         f"{_PKG}.services.nai_danbooru_online_retriever",
         f"{_PKG}.services.nai_draw_core",
         f"{_PKG}.services.nai_image_meta",
+        f"{_PKG}.services.nai_prompt_memory",
         f"{_PKG}.services.nai_prompt_postprocess",
         f"{_PKG}.services.nai_prompt_output_parser",
         f"{_PKG}.services.nai_random_scene",

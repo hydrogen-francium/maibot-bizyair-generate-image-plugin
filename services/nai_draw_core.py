@@ -140,6 +140,75 @@ async def inject_tag_candidates(
         action_inputs["tag_candidates"] = ""
 
 
+def inject_previous_context(
+        get_config: ConfigGetter,
+        action_inputs: dict[str, Any],
+        chat_id: Any,
+        *,
+        log_prefix: str = "",
+) -> None:
+    """读会话态上一轮上下文 → 渲染 <previous_prompt_context> 块伪注入 action_inputs["previous_prompt_context"]（原地）。
+
+    仿 inject_tag_candidates：previous_prompt_context 是已解析字面量，解析器把无依赖的 action_input 直接
+    灌进 resolved_context，nai_director 模板引用 {previous_prompt_context} 即生效，无需登记进 action_parameter_names。
+
+    **必定**设置 action_inputs["previous_prompt_context"]（哪怕空串）：模板引用了它，缺 key 会被判「未定义变量」。
+    失败安全：未启用 / /nai0 直发 / 任何异常 → 空串。仅 NAI 预设路径调用，纯读内存（无 IO，故 sync）。
+    """
+    # 延迟 import：规避 services 包级循环（与 inject_tag_candidates 同策略）
+    from .nai_prompt_memory import get_last_nai_context, render_previous_prompt_block
+
+    action_inputs["previous_prompt_context"] = ""
+    try:
+        # /nai0 直发（nai_raw_tags 非空）时 nai_director 旁路 → 续承同样旁路（用户拍板：/nai0 不参与）
+        if str(action_inputs.get("nai_raw_tags") or "").strip():
+            return
+        cfg = get_config("prompt_continuity", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return
+        try:
+            ttl = float(cfg.get("inherit_ttl", 3600) or 0)
+        except (TypeError, ValueError):
+            ttl = 3600.0
+        last_prompt, last_request = get_last_nai_context(chat_id, ttl=ttl)
+        action_inputs["previous_prompt_context"] = render_previous_prompt_block(last_prompt, last_request)
+        logger.info(f"{log_prefix} 注入 previous_prompt_context: {short_repr(action_inputs['previous_prompt_context'])}")
+    except Exception as exc:  # 失败安全：续承注入任何异常都降级为空，绝不阻断出图
+        logger.warning(f"{log_prefix} previous_prompt_context 注入失败，已降级为空: {exc}")
+        action_inputs["previous_prompt_context"] = ""
+
+
+def record_previous_context(
+        get_config: ConfigGetter,
+        payload: DrawPayload,
+        action_inputs: Optional[dict[str, Any]],
+        chat_id: Any,
+        *,
+        log_prefix: str = "",
+) -> None:
+    """出图成功后把本轮 nai_director 输出写回会话态，供下次续承。
+
+    失败安全：写回任何环节出错都只记日志，绝不影响已成功的出图。
+    /nai0 直发（nai_raw_tags 非空）→ director 未跑 → 不写回（用户拍板：/nai0 不参与）。
+    """
+    try:
+        cfg = get_config("prompt_continuity", {}) or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return
+        inputs = action_inputs or {}
+        if str(inputs.get("nai_raw_tags") or "").strip():
+            return  # /nai0 不参与
+        director_output = str((payload.template_context or {}).get("nai_director") or "").strip()
+        if not director_output:
+            return
+        from .nai_prompt_memory import set_last_nai_context
+        request_text = str(inputs.get("image_intent") or "").strip()
+        set_last_nai_context(chat_id, director_output, request_text)
+        logger.info(f"{log_prefix} 已记录本轮 previous context: {short_repr(director_output)}")
+    except Exception as exc:  # 失败安全：写回不影响已成功的出图
+        logger.warning(f"{log_prefix} 写回 previous context 失败，已忽略: {exc}")
+
+
 def _is_i2i_preset(preset: dict[str, Any]) -> bool:
     """preset 含 i2i_strength / i2i_noise 即视为 i2i 图生图预设（NewAPI §20.1）。"""
     return preset.get("i2i_strength") is not None or preset.get("i2i_noise") is not None
@@ -356,6 +425,8 @@ async def resolve_to_payload(
         inject_nai_runtime_inputs(action_inputs, nai_artist=nai_artist, nai_size=nai_size, log_prefix=log_prefix)
         # P4：online tag 检索结果伪注入 {tag_candidates}（image_intent 空时自然跳过；失败安全降级）
         await inject_tag_candidates(get_config, action_inputs, log_prefix=log_prefix)
+        # continuity：读会话态上一轮 → 伪注入 {previous_prompt_context}（/nai0 旁路；失败安全降级）
+        inject_previous_context(get_config, action_inputs, chat_id, log_prefix=log_prefix)
 
     all_bindings = get_parameter_bindings_config(get_config, provider)
     parameter_bindings_config = filter_parameter_bindings_by_preset(all_bindings, active_preset)
@@ -513,4 +584,9 @@ async def run_draw_to_bytes(**kwargs: Any) -> tuple[bytes, DrawPayload]:
         timeout=payload.timeout,
         log_prefix=log_prefix,
     )
+    # continuity：出图成功 → 把本轮 nai_director 输出写回会话态供下次续承（仅 nai_chat；失败安全，不影响已成功的出图）
+    if payload.provider == "nai_chat":
+        record_previous_context(
+            get_config, payload, kwargs.get("action_inputs"), kwargs.get("chat_id"), log_prefix=log_prefix
+        )
     return image_bytes, payload

@@ -751,6 +751,9 @@ char2:boy, behind girl, short hair, source#hugging, looking at her,
 
 {tag_candidates}
 
+## 连续性（下方为上一轮上下文；其中已含继承规则，按规则判断本轮属于微调 / 换角色保场景 / 全新）
+{previous_prompt_context}
+
 ## 最近聊天上下文（最近 30 条）
 {recent_chat_context_30}
 
@@ -815,3 +818,14 @@ related_limit = 20
 related_seed_count = 8
 show_nsfw = true
 popularity_weight = 0.15
+
+# ============================================================
+# 会话态 continuity：把上一轮 nai_director 生成的 tag 串（+上一轮意图）渲染成
+# <previous_prompt_context> 块喂回大脑，块内带「微调 / 换角色保场景 / 全新」三档规则，让大脑自判本轮继承多少。
+# per-chat 内存存储（群共享 / 私聊隔离），重启丢失；/nai0 直发不参与（既不注入也不写回）。
+# inherit_ttl：上一轮超过这么多秒没出图就当新话题不再继承；默认 3600（1h），0 = 永不过期。
+# 不想要连续性就把 enabled 设为 false。
+# ============================================================
+[prompt_continuity]
+enabled = true
+inherit_ttl = 3600
