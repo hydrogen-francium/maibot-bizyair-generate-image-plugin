@@ -19,7 +19,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from services.action_parameter_utils import build_action_parameters
-from services.nai_draw_core import DrawPayload, resolve_to_payload
+from services.nai_draw_core import DrawPayload, inject_tag_candidates, resolve_to_payload
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
@@ -417,3 +417,86 @@ class TestResolveToPayloadCharref:
                 llm_value_factory=AsyncMock(),
                 log_prefix="[test]",
             )
+
+
+class TestInjectTagCandidates:
+    """inject_tag_candidates 伪注入单元测试：mock resolve_tag_candidates，零网络。
+
+    必定 set tag_candidates（模板引用，缺 key 会判未定义变量）；/nai0(nai_raw_tags 非空)、
+    未启用、无 image_intent 均跳过检索；异常失败安全降级空串。
+    """
+
+    @staticmethod
+    def _get_config(enabled):
+        cfg = {"enabled": enabled}
+        return lambda k, d=None: (cfg if k == "tag_retriever" else d)
+
+    @pytest.mark.asyncio
+    async def test_injects_when_enabled(self, monkeypatch):
+        mock_resolve = AsyncMock(return_value="<tag_candidates>X</tag_candidates>")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "画猫娘"}
+        await inject_tag_candidates(self._get_config(True), action_inputs, log_prefix="[t]")
+        assert action_inputs["tag_candidates"] == "<tag_candidates>X</tag_candidates>"
+        mock_resolve.assert_awaited_once()
+        # query 取自 image_intent（位置实参第二个）
+        assert mock_resolve.call_args.args[1] == "画猫娘"
+
+    @pytest.mark.asyncio
+    async def test_skips_when_nai_raw_tags_present(self, monkeypatch):
+        # /nai0 直发：nai_raw_tags 非空 → director 旁路 → 检索同样旁路（不触网）
+        mock_resolve = AsyncMock(return_value="SHOULD_NOT_BE_USED")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "画猫娘", "nai_raw_tags": "1girl, solo"}
+        await inject_tag_candidates(self._get_config(True), action_inputs)
+        assert action_inputs["tag_candidates"] == ""
+        mock_resolve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_disabled(self, monkeypatch):
+        mock_resolve = AsyncMock(return_value="X")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "画猫娘"}
+        await inject_tag_candidates(self._get_config(False), action_inputs)
+        assert action_inputs["tag_candidates"] == ""
+        mock_resolve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_image_intent(self, monkeypatch):
+        mock_resolve = AsyncMock(return_value="X")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "   "}
+        await inject_tag_candidates(self._get_config(True), action_inputs)
+        assert action_inputs["tag_candidates"] == ""
+        mock_resolve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_always_sets_key_when_intent_missing(self, monkeypatch):
+        # 模板始终引用 {tag_candidates}：即便完全无 image_intent 也必须有该 key
+        mock_resolve = AsyncMock(return_value="X")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {}
+        await inject_tag_candidates(self._get_config(True), action_inputs)
+        assert action_inputs["tag_candidates"] == ""
+        mock_resolve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failsafe_on_exception(self, monkeypatch):
+        # 失败安全：resolve_tag_candidates 抛异常 → 不向上抛，降级空串
+        mock_resolve = AsyncMock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "画猫娘"}
+        await inject_tag_candidates(self._get_config(True), action_inputs)
+        assert action_inputs["tag_candidates"] == ""

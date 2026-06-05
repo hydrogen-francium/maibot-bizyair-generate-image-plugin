@@ -457,7 +457,8 @@ global_blacklist = []
 | NAI 复刻：i2i 图生图（独立 `nai_i2i` 预设 + 读图头对齐 `size` + 友好拒绝非标准尺寸） | ✅ |
 | NAI 复刻：Vibe Transfer + 角色参考（独立 `nai_vibe` / `nai_charref` 预设，强兼单图，charref 仅 V4.5） | ✅ |
 | NAI 复刻：vibe cache_id 复用（响应注释落 SQLite + 送图前查改写 + stale 重试，省 anlas） | ✅ |
-| NAI 复刻：会话态 / 命名图库·多图 vibe / tag 检索 / 反推 | 🚧 |
+| NAI 复刻：online tag 检索（Danbooru 语义匹配 + 共现推荐喂 `nai_director`，失败安全降级、可配置关闭） | ✅ |
+| NAI 复刻：会话态 / 反推 | 🚧 |
 | 独立 WebUI（替代框架自带的 ConfigLayout） | 🚧 |
 | 跨任务持久化变量 | 🚧 |
 | 决策器流式调用 | 🚧 |

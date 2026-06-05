@@ -105,6 +105,41 @@ def inject_nai_runtime_inputs(
     )
 
 
+async def inject_tag_candidates(
+        get_config: ConfigGetter,
+        action_inputs: dict[str, Any],
+        *,
+        log_prefix: str = "",
+) -> None:
+    """用 image_intent 调 online Danbooru tag 检索，把候选文本伪注入 action_inputs["tag_candidates"]（原地修改）。
+
+    仿 inject_nai_runtime_inputs：tag_candidates 是已解析字面量（无占位符），解析器会把无依赖的
+    action_input 直接灌进 resolved_context，nai_director 模板引用 {tag_candidates} 即生效，
+    无需登记进 action_parameter_names。
+
+    **必定**设置 action_inputs["tag_candidates"]（哪怕空串）：模板引用了它，缺 key 会被判「未定义变量」。
+    失败安全：未启用 / 无意图（如 /nai0 直发）/ 任何异常 → 空串，绝不阻断出图。仅 NAI 预设路径调用。
+    """
+    # 延迟 import：规避 services ↔ clients 包级循环（与 nai_vibe_cache_rewrite 同策略）
+    from .nai_tag_candidate_resolver import resolve_tag_candidates
+
+    action_inputs["tag_candidates"] = ""
+    try:
+        # /nai0 直发（nai_raw_tags 非空）时 nai_director 旁路 → 检索同样旁路（与 director 惰性旁路一致，避免无谓触网）
+        if str(action_inputs.get("nai_raw_tags") or "").strip():
+            return
+        query = str(action_inputs.get("image_intent") or "").strip()
+        retriever_config = get_config("tag_retriever", {}) or {}
+        if not query or not isinstance(retriever_config, dict) or not retriever_config.get("enabled", False):
+            return
+        candidates = await resolve_tag_candidates(retriever_config, query, log_prefix=log_prefix)
+        action_inputs["tag_candidates"] = candidates or ""
+        logger.info(f"{log_prefix} 注入 tag_candidates: {short_repr(action_inputs['tag_candidates'])}")
+    except Exception as exc:  # 双保险失败安全：注入环节任何异常都降级为空，绝不阻断出图
+        logger.warning(f"{log_prefix} tag_candidates 注入失败，已降级为空: {exc}")
+        action_inputs["tag_candidates"] = ""
+
+
 def _is_i2i_preset(preset: dict[str, Any]) -> bool:
     """preset 含 i2i_strength / i2i_noise 即视为 i2i 图生图预设（NewAPI §20.1）。"""
     return preset.get("i2i_strength") is not None or preset.get("i2i_noise") is not None
@@ -319,6 +354,8 @@ async def resolve_to_payload(
     # NAI 运行时设置（画师串/尺寸）注入；仅 NAI 预设生效，GPT 路径不受影响
     if provider == "nai_chat":
         inject_nai_runtime_inputs(action_inputs, nai_artist=nai_artist, nai_size=nai_size, log_prefix=log_prefix)
+        # P4：online tag 检索结果伪注入 {tag_candidates}（image_intent 空时自然跳过；失败安全降级）
+        await inject_tag_candidates(get_config, action_inputs, log_prefix=log_prefix)
 
     all_bindings = get_parameter_bindings_config(get_config, provider)
     parameter_bindings_config = filter_parameter_bindings_by_preset(all_bindings, active_preset)

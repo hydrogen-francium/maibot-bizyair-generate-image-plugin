@@ -743,6 +743,14 @@ char2:boy, behind girl, short hair, source#hugging, looking at her,
 ## 输入意图
 {image_intent}
 
+## 候选标签使用（重要；下方候选块为空则忽略本段）
+系统通过 Danbooru 数据库为你提供候选标签（下方 <tag_candidates> 块），分两类：
+- 语义匹配：与用户描述直接相关的标准 Danbooru tag，准确度高于自行翻译；高度相关的优先选用，无关的直接忽略
+- 共现推荐：与语义匹配 tag 在真实画作中经常搭配的 tag，适合补充场景一致性元素（搭配服饰/配件/动作/画面细节）；不相关的不强塞
+使用原则：候选只是建议、不强制全用，挑贴合本次描述的即可；候选没覆盖的用你自身 Danbooru 知识补；同概念有泛义/具体词时优先具体词（school_uniform 优于 uniform）；已知角色按主体识别规则不补外貌；画师 tag 禁止使用（系统统一管理）。
+
+{tag_candidates}
+
 ## 最近聊天上下文（最近 30 条）
 {recent_chat_context_30}
 
@@ -787,3 +795,23 @@ selection_strategy = "balance"
 
 [plugin]
 enabled = true
+
+# ============================================================
+# P4：online Danbooru tag 检索（给 nai_director 大脑喂候选 tag，提升冷门概念的 tag 准确度）
+# 检索 query = 用户中文意图（image_intent）；结果伪注入 nai_director 模板的 {tag_candidates} 占位符。
+# 失败安全：未启用 / 无结果 / 超时 / 任何异常都降级为空串，绝不阻断出图。
+# ⚠️ 依赖第三方 HF Space（sakizuki-danboorusearch），每次 NAI 出图前会多 1~2 次 HTTP（加延迟）；
+#    timeout 压到 30s 权衡聊天场景；不想要 / 拖慢明显就把 enabled 设为 false。
+# 仅 online：local embedding 检索未实现（mode 非 online 时仍按 online 处理）。
+# ============================================================
+[tag_retriever]
+enabled = true
+mode = "online"
+api_url = "https://sakizuki-danboorusearch.hf.space/api"
+timeout = 30
+search_limit = 30
+search_top_k = 5
+related_limit = 20
+related_seed_count = 8
+show_nsfw = true
+popularity_weight = 0.15
