@@ -290,6 +290,7 @@ NAI 不支持 `upload`（NAI Chat 接口不需要图片 URL 输入）。
 | `/nai size [v\|h\|s\|auto]` | 查看 / 切换出图尺寸（竖 / 横 / 方 / 跟随比例） |
 | `/nai0 <英文 tag>` | 直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，自动套质量词 / 画师串 / 负面词 / 尺寸 |
 | `/nai 随机[自拍]` | 随机出图：随机创作方向交给 `nai_director` 自由发挥，`自拍` 走自拍构图 |
+| `/nai 反推` | 把图片反推成 Danbooru tag（先读 PNG 元数据，未命中走 WD14 在线兜底）；发命令时附带图或引用一张图片消息 |
 
 所有命令都受 `permission_control.command_user_list` 约束。`/nai set` / `art` / `size` / `nsfw` 切换成功但写回失败时，本次会话仍生效，下次启动回滚。
 
@@ -459,7 +460,7 @@ global_blacklist = []
 | NAI 复刻：vibe cache_id 复用（响应注释落 SQLite + 送图前查改写 + stale 重试，省 anlas） | ✅ |
 | NAI 复刻：online tag 检索（Danbooru 语义匹配 + 共现推荐喂 `nai_director`，失败安全降级、可配置关闭） | ✅ |
 | NAI 复刻：会话态 continuity（上一轮 tag 续承 + 三档继承规则让大脑自判，per-chat 内存 + TTL） | ✅ |
-| NAI 复刻：反推（P5） | 🚧 |
+| NAI 复刻：反推 `/nai 反推`（PNG 元数据读 prompt + WD14 在线 Space 兜底，软依赖 gradio_client、失败安全降级） | ✅ |
 | 独立 WebUI（替代框架自带的 ConfigLayout） | 🚧 |
 | 跨任务持久化变量 | 🚧 |
 | 决策器流式调用 | 🚧 |

@@ -15,6 +15,7 @@ from .components.nai_commands import (
     NaiSetCommand,
     NaiSizeCommand,
 )
+from .components.nai_retag_command import NaiRetagCommand
 from .services import build_action_parameters, permission_manager
 
 logger = get_logger("bizyair_generate_image_plugin")
@@ -654,7 +655,39 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 default="balance",
                 description="自定义变量生成时使用的模型选择策略",
             ),
-        }
+        },
+        "retag": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="图片反推总开关（/nai 反推）。关闭后命令直接回提示。",
+            ),
+            "wd14_enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="PNG 元数据未命中时是否走 WD14 在线 Space 兜底。需 pip install gradio_client；未装则元数据反推仍可用、兜底自动跳过。",
+            ),
+            "wd14_threshold": ConfigField(
+                type=float,
+                default=0.35,
+                description="WD14 通用标签置信度阈值（0~1），越高越严格、tag 越少",
+            ),
+            "wd14_character_threshold": ConfigField(
+                type=float,
+                default=0.8,
+                description="WD14 角色标签置信度阈值（0~1）",
+            ),
+            "wd14_timeout": ConfigField(
+                type=int,
+                default=60,
+                description="WD14 单个 Space 调用超时（秒），上限 120；HF Space 冷启动慢，最坏轮询 3 个 Space 数分钟",
+            ),
+            "wd14_proxy": ConfigField(
+                type=str,
+                default="",
+                description="WD14 连接 HF Space 的可选代理（如 http://127.0.0.1:7890）；留空走环境变量",
+            ),
+        },
     }
 
     def get_plugin_components(
@@ -710,4 +743,5 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         components.append((NaiSizeCommand.get_command_info(), NaiSizeCommand))
         components.append((Nai0Command.get_command_info(), Nai0Command))
         components.append((NaiRandomCommand.get_command_info(), NaiRandomCommand))
+        components.append((NaiRetagCommand.get_command_info(), NaiRetagCommand))
         return components

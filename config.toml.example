@@ -829,3 +829,19 @@ popularity_weight = 0.15
 [prompt_continuity]
 enabled = true
 inherit_ttl = 3600
+
+# ============================================================
+# P5 图片反推 /nai 反推：把一张图反推成 Danbooru tag 串（复制后可自行 /nai0 重画）。
+# 两级：① 读 PNG 元数据（NAI/SD 自带 prompt，纯标准库零网络，命中即返回）
+#       ② 没命中走 WD14 在线 Space 兜底（多 HF Space 轮询识别）。
+# 取图复用现有取图链：发命令时附带图 / 引用一张图片消息再发 /nai 反推。
+# ⚠️ WD14 兜底需手动安装 gradio_client（pip install gradio_client）；未装则元数据反推仍可用、兜底自动跳过。
+#    HF Space 冷启动慢、最坏轮询数分钟；不想要兜底把 wd14_enabled=false，整个功能关掉把 enabled=false。
+# ============================================================
+[retag]
+enabled = true
+wd14_enabled = true
+wd14_threshold = 0.35
+wd14_character_threshold = 0.8
+wd14_timeout = 60
+wd14_proxy = ""

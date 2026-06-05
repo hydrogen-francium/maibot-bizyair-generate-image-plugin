@@ -103,6 +103,8 @@ def _setup_plugin_package() -> None:
         f"{_PKG}.services.nai_prompt_postprocess",
         f"{_PKG}.services.nai_prompt_output_parser",
         f"{_PKG}.services.nai_random_scene",
+        f"{_PKG}.services.nai_retag_png_meta",
+        f"{_PKG}.services.nai_retag_reverser",
         f"{_PKG}.services.nai_settings",
         f"{_PKG}.services.nai_tag_candidate_resolver",
         f"{_PKG}.services.nai_vibe_cache",
@@ -118,6 +120,7 @@ def _setup_plugin_package() -> None:
         f"{_PKG}.clients.nai_chat_client",
         f"{_PKG}.clients.openapi_client",
         f"{_PKG}.clients.openapi_models",
+        f"{_PKG}.clients.wd14_client",
     ]
     for fqn in _submodules_to_alias:
         try:
