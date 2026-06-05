@@ -62,17 +62,56 @@ def build_variable_task_config(get_config: ConfigGetter) -> TaskConfig:
 
 
 async def generate_variable_with_llm(get_config: ConfigGetter, prompt: str, log_prefix: str = "") -> str:
-    """使用变量 LLM 配置生成最终变量值。"""
-    logger.info(f"{log_prefix}[自定义变量] 调用 LLM 生成变量值，提示词: {prompt!r}")
-    success, content, _, _ = await llm_api.generate_with_model(
-        prompt=prompt,
-        model_config=build_variable_task_config(get_config),
-        request_type="bizyair_custom_variable_generation",
-    )
-    logger.info(f"{log_prefix}[自定义变量] LLM 原始输出: {content!r}")
-    if not success:
-        raise RuntimeError(f"LLM 生成自定义变量失败: {content}")
-    return content.strip()
+    """使用变量 LLM 配置生成最终变量值。
+
+    防御：框架 llm_api 偶发返回 `success=True` 但 content 为空 / 仅 token 统计占位串
+    （如 "Token count: 0"，多见于超长输入触发供应商限制时）。这种"假成功"若被当 tag 送去
+    出图，会画出「只有质量词+画师串、无主体」的乱图。这里检测并当失败处理 + 重试一次，
+    再不行就抛错，让出图走失败提示，绝不把废串当 prompt。
+    """
+    last_bad = ""
+    for attempt in (1, 2):
+        logger.info(f"{log_prefix}[自定义变量] 调用 LLM 生成变量值（第{attempt}次），提示词: {prompt!r}")
+        success, content, _, _ = await llm_api.generate_with_model(
+            prompt=prompt,
+            model_config=build_variable_task_config(get_config),
+            request_type="bizyair_custom_variable_generation",
+        )
+        logger.info(f"{log_prefix}[自定义变量] LLM 原始输出: {content!r}")
+        if not success:
+            raise RuntimeError(f"LLM 生成自定义变量失败: {content}")
+        cleaned = (content or "").strip()
+        bad = _is_degenerate_llm_output(cleaned)
+        if not bad:
+            return cleaned
+        last_bad = cleaned
+        logger.warning(
+            f"{log_prefix}[自定义变量] LLM 返回疑似废输出（{bad}）: {cleaned!r}，"
+            f"{'重试一次' if attempt == 1 else '重试后仍废，判失败'}"
+        )
+    raise RuntimeError(f"LLM 连续返回无效输出（最后一次: {last_bad!r}），已放弃，不出图以免画出无主体乱图")
+
+
+# 框架 llm_api 失败/空响应时透传的占位串特征（success 仍为 True 的"假成功"）
+_DEGENERATE_LLM_MARKERS = ("token count:", "token count :")
+
+
+def _is_degenerate_llm_output(text: str) -> str:
+    """判定 LLM 输出是否为「废输出」（空 / 框架 token 统计占位串 / 过短无信息）。
+
+    返回非空原因字符串表示废，空字符串表示正常。仅拦明确的失败特征，不误伤正常 tag。
+    """
+    if not text:
+        return "空输出"
+    low = text.strip().lower()
+    if not low:
+        return "空输出"
+    # 整串就是 token 统计占位（"Token count: 0" 之类），是框架对空响应的透传
+    for marker in _DEGENERATE_LLM_MARKERS:
+        if low.startswith(marker):
+            return f"token统计占位({text.strip()!r})"
+    return ""
+
 
 
 # ──────────────── NAI 运行时设置注入 ────────────────
@@ -480,6 +519,23 @@ async def resolve_to_payload(
         builtin_variable_provider=builtin_variable_provider,
     )
     template_context = {**resolved_action_inputs, **custom_variable_values}
+
+    # 诊断日志（P5 排障）：完整打印 NAI 大脑输出与拼好的最终正面 prompt，不截断，便于核对
+    # 「角色/动作与意图不符」类问题——直接看大脑吐了什么、画师串+主体怎么拼的。
+    if provider == "nai_chat":
+        _diag_director = template_context.get("nai_director")
+        _diag_final = template_context.get("nai_final_prompt")
+        _diag_subject = template_context.get("nai_subject")
+        logger.info(
+            f"{log_prefix} [反推排障] image_intent={template_context.get('image_intent')!r}\n"
+            f"  nai_raw_tags={template_context.get('nai_raw_tags')!r}\n"
+            f"  nai_director(大脑原始输出)={_diag_director!r}\n"
+            f"  nai_subject(主体来源)={_diag_subject!r}\n"
+            f"  nai_artist(画师串)={template_context.get('nai_artist')!r}\n"
+            f"  nai_final_prompt(最终正面)={_diag_final!r}\n"
+            f"  tag_candidates={short_repr(template_context.get('tag_candidates'))}\n"
+            f"  previous_prompt_context={short_repr(template_context.get('previous_prompt_context'))}"
+        )
 
     provider_payload, timeout = await build_provider_payload(
         get_config,

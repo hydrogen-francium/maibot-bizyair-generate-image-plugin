@@ -203,9 +203,13 @@ class TestNaiBrainIsolation:
         assert not leaked, f"GPT 链泄漏进 NAI 闭包: {sorted(leaked)}"
 
     def test_gpt_preset_does_not_run_nai_brain(self, config, registry, action_param_names):
-        active = config["bizyair_generate_image_plugin"]["active_preset"]
+        # 明确取一个 GPT 预设名（openapi_parameter_mappings 里的 preset_name），
+        # 不依赖用户运行时设置的 active_preset（用户切到 NAI 预设时它会是 nai_default，
+        # 拿 GPT mappings 按 NAI 预设过滤会得到空集，与本测试意图无关）。
+        gpt_mappings = config["bizyair_client"]["openapi_parameter_mappings"]
+        active = gpt_mappings[0]["preset_name"]
         closure = _preset_closure(
-            registry, config["bizyair_client"]["openapi_parameter_mappings"], active, action_param_names
+            registry, gpt_mappings, active, action_param_names
         )
         # GPT 大脑在闭包内
         assert "final_prompt" in closure
