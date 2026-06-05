@@ -533,7 +533,7 @@ class TestInjectPreviousContext:
         inject_previous_context(self._cfg(True), ai, "c1")
         block = ai["previous_prompt_context"]
         assert "solo, 1girl, smile" in block
-        assert "微调" in block and "换角色保场景" in block
+        assert "默认全新" in block and "续画" in block
 
     def test_placeholder_block_when_no_previous(self):
         ai = {}

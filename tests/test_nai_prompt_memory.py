@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""nai_prompt_memory 单测：render 三档块 + per-chat 内存存取 + TTL 过期。
+"""nai_prompt_memory 单测：render 继承规则块（默认全新）+ per-chat 内存存取 + TTL 过期。
 
 不依赖框架/网络；TTL 用直接注入旧 timestamp 的方式测（不 monkeypatch time，靠真实 now 远大于旧 ts）。
 """
@@ -30,12 +30,15 @@ class TestRenderPreviousPromptBlock:
             assert "</previous_prompt_context>" in block
             assert "无上一轮提示词" in block
 
-    def test_with_previous_contains_prompt_and_three_tiers(self):
+    def test_with_previous_contains_prompt_and_default_new_rule(self):
         block = render_previous_prompt_block("solo, 1girl, smile")
         assert "solo, 1girl, smile" in block
-        assert "微调" in block
-        assert "换角色保场景" in block
-        assert "全新主题" in block
+        # 收紧后：默认全新，仅明确续画词才继承
+        assert "默认全新" in block
+        assert "续画" in block
+        assert "完全忽略上方提示词" in block
+        # 旧三档关键词已移除（避免大脑误判续承）
+        assert "换角色保场景" not in block
 
     def test_with_last_request_includes_it(self):
         block = render_previous_prompt_block("solo, 1girl", last_request="画一个女孩")
