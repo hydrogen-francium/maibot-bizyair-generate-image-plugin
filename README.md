@@ -177,6 +177,65 @@ final_prompt (literal + condition: scene_type == selfie ?)
 
 ---
 
+## NAI 出图：复用同一大脑 + NAI 专属包装层
+
+## NAI 出图：NAI 专属单次大脑 + 包装层
+
+NAI 预设走一条**独立的单次大脑** `nai_director`（移植 nai_draw 的 `prompt_rules`，一次 LLM 调用直接吐完整 Danbooru tag 串，内部自判画谁 / 是否自拍 / 套钠人设 / 安全词 / NAI 权重语法），**不复用** BizyAir 那条 `director → … → final_prompt` 链。
+
+之所以分开：BizyAir 的 selfie 装配一次最多 5 次 LLM（director + emotion + english_outfit/bg/extra），NAI 单次就够。靠变量系统的**惰性闭包**保证——NAI 预设激活时只跑 `nai_director`，GPT 那条链一个都不进闭包；GPT 预设激活时 `nai_director` 不跑。零双跑、零空转，无需改 `action_require`（仍单 `image_intent`）。
+
+| 变量 | 作用 |
+| --- | --- |
+| `nai_director` | NAI 专属大脑（llm），消费 `{image_intent}` / `{today_state}` / `{current_datetime}` / `{recent_chat_context_30}`，输出 Danbooru tag 串 |
+| `nai_subject` | 主体来源：`/nai0` 注入 `nai_raw_tags` 时直接用（旁路 director），否则走 `nai_director` |
+| `nai_quality` | NAI 质量词，排在最前 |
+| `nai_negative` | NAI 负面词（映射到 `negative_prompt`） |
+| `nai_final_prompt` | 组装顺序 `质量词 →（画师串）→ 主体`，映射到 `prompt` |
+
+这些变量**只被 NAI 预设引用**，不影响共享的 `final_prompt`（BizyAir 预设继续直接用 `final_prompt`）。「画指定角色」（画别的二次元角色 / 风景时跳过钠人设）由 `nai_director` 模板的「主体识别」段自判，不需要显式开关。
+
+### 画师串与尺寸：运行时命令切换（不在 config 里手填）
+
+`nai_artist`（画师串）和 `nai_size`（尺寸）不是自定义变量，而是由 Action 在出图时作为**伪 action_input 注入**（仅 NAI 预设生效），背后的值由命令控制、写回 config 持久：
+
+- **画师串** `/nai art <序号|名称>` 从 `[[nai_chat_client.nai_artist_presets]]` 选一套，`/nai art off` 取消。顺序固定 **质量词 → 画师串 → 主体**。大脑不输出画师 tag，统一由这里控制，避免每张图风格漂移。
+- **尺寸** `/nai size v|h|s|auto`：v 竖 832×1216 / h 横 1216×832 / s 方 1024×1024 / auto 跟随画面 `aspect_ratio`。`nai_size` dict 按注入的 `nai_size_code` 映射到像素。
+
+### 中文强制清洗（NewAPI §8）
+
+NovelAI 网关要求 `prompt` / `negative_prompt` 必须是英文，含任何中文 / 日文 / 全角符号会直接 **400**。所以 NAI 通路在 `json.dumps` 送出前会自动剔除残留 CJK 字符（LLM 偶尔漏译时的兜底），并把全角逗号 `，` / 顿号 `、` 转成英文逗号。这一步是 NAI 专属的，BizyAir 通路不做（NanoBanana/GPT 能吃中文）。
+
+### 多人 characters[]（NewAPI §7）
+
+画两人及以上时，`nai_director` 改用结构化文本输出——第一行全局段（人数 / 场景 / 光影），随后每行一个 `char1:` / `char2:` 角色段（外貌 / 服装 / 动作 / 互动），把各角色特征分离，防止发色 / 服装互相污染。肢体互动用 `source#`（发出方，现在分词）/ `target#`（接受方，过去分词）/ `mutual#`（对等）前缀区分主被动。
+
+送出前 NAI 通路自动把这段文本拆成 NewAPI 的 `characters[]` 通道：全局段留在 `prompt`，各角色进 `characters[]`，并置 `use_order=true` / `use_coords=false`（**自动布局优先**，左右上下站位交给模型，不写显式坐标）。每个 `characters[i].prompt` 同样受 §8 的 CJK / SFW 清洗。多角色只在 **`nai-diffusion-4*`** 系列生效；切到 `nai-diffusion-3` 等旧模型会自动降级回单串（打 warning）。解析器同时保留 JSON v3 + `[A-E][1-5]` 坐标通道，将来要手动钉坐标只改 `nai_director` 文案即可启用，无需改代码。
+
+### NAI i2i 图生图（NewAPI §20.1）
+
+独立 i2i 预设（如 `nai_i2i`）：`/dr use nai_i2i` 切过去，引用一张图（或随出图消息附带）即按它重绘；切回 `nai_default` 即纯文生图。预设里 `i2i_strength`（默认 0.7，重绘强度 0.01–0.99）/ `i2i_noise`（默认 0.0，0–0.99）这两个键的存在本身就是 i2i 标记。
+
+NewAPI 要求 `i2i.image` 宽高必须**严格等于**外层 `size`，而本仓无 Pillow 不能缩放图——所以 i2i 通路改为**读图真实尺寸（纯 `struct` 解 PNG/JPEG/WebP 头）覆盖外层 `size`**。代价：参考图必须是 NAI 标准尺寸（宽高 64 整除且不超 竖 832×1216 / 横 1216×832 / 方 1024×1024），否则**友好拒绝**（不静默踩上游 400，也不静默回退）。最稳用法是**对 NAI 之前生成的图迭代重绘**。图以 base64 直接进 `content_json`（MB 级），全程不进 director / 任何文本 LLM，相关日志一律短 repr（base64 铁律）。i2i 只覆盖 `size`、加 `i2i` 字段，不碰 prompt，与多人 `characters[]` 通道正交可共存。
+
+### NAI Vibe Transfer 风格迁移（NewAPI §20.3）
+
+独立 vibe 预设（`nai_vibe`）：`/dr use nai_vibe` 后引用一张图，把它的整体画风/氛围迁移到新图。预设里 `vibe_info_extracted`（默认 0.7，信息提取量 0.01–1.0）/ `vibe_reference_strength`（默认 0.6，单图参考强度）/ `vibe_strength`（默认 1.0，整体强度）任一键存在即标记 vibe 预设。与 i2i 的关键差异：§20.3 **不限参考图边长**（服务端自动 resize），所以 vibe 通路**不校验尺寸、不覆盖 `size`**——任意尺寸图都能用。强兼单图（原插件支持最多 4 张组合，这里简化为单张引用图）。
+
+### NAI 角色参考（NewAPI §20.4）
+
+独立 charref 预设（`nai_charref`）：`/dr use nai_charref` 后引用一张图，把图里的角色形象/风格作为强约束注入新图。`charref_type`（`character` / `style` / `character&style`，默认 `character&style`）/ `charref_fidelity`（默认 1.0）/ `charref_strength`（默认 1.0）任一键即标记。**仅 NAI V4.5 系列模型支持**——`/nai set` 成非 V4.5 模型时**友好拒绝**（不静默降级出普通图误导你）。同样不限边长、不覆盖 `size`。
+
+### Vibe cache（cache_id 复用省 anlas，NewAPI §20.3.1）
+
+NAI 对 vibe 参考图编码按次收 1 anlas。网关在响应里以 HTML 注释回传 `vibe_cache_ids`，本插件把 `(图 hash + info_extracted + model) → cache_id` 落本地 SQLite（`data/nai_vibe_cache.db`，不污染宿主库）。下次同图同参数请求自动改走 `cache_id` 复用态省编码计费。`[nai_chat_client]` 的 `vibe_cache_enabled`（默认 `true`）控制开关，仅对 `nai_vibe` 预设生效。**失败安全铁律**：查改写/落库/解析任何环节出错都降级为正常编码、绝不阻断出图；服务端 `cache_id` 失效（疑似 stale 400）会自动清本地并以编码态重试一次。聊天场景参考图常变命中率有限，可按需关闭。
+
+> i2i / vibe / 角色参考三者走**同一张引用图来源**（强制收集 `quoted_image_base64`），独立预设触发、互斥（一个预设一种能力）；图全程不进 director / 文本 LLM，含图日志一律短 repr（base64 铁律）。**砍掉的切口**：inpaint（原插件就没实现、聊天场景给不出精确蒙版）、命名图库 + 入站缓存 + 多图 vibe（重型有状态基础设施，与 config-driven 理念冲突）。
+
+> 切到 NAI：把 `active_preset` 设为某个 NAI 预设名（如 `nai_default`），或 `/dr use nai_default`。
+
+---
+
 ## 图生图（仅 BizyAir）
 
 ```toml
@@ -224,8 +283,26 @@ NAI 不支持 `upload`（NAI Chat 接口不需要图片 URL 输入）。
 | `/dr list` | 列出所有可用预设 + 当前激活状态 |
 | `/dr use <预设名>` | 运行时切换激活预设，自动写回 config.toml |
 | `/dr switch <on\|off>` | 运行时开关生图功能，自动写回 config.toml |
+| `/nai set [代号]` | 查看 / 切换 NAI 模型全局覆盖（如 `/nai set 4.5`；`/nai set off` 取消） |
+| `/nai models` | 列出可用 NAI 模型代号 + 各预设自带 model |
+| `/nai nsfw [on\|off]` | 查看 / 开关 SFW 过滤（开=剔除擦边 tag；默认关，允许轻量暴露） |
+| `/nai art [序号\|名称\|off]` | 查看 / 切换画师串预设（读 `nai_artist_presets`） |
+| `/nai size [v\|h\|s\|auto]` | 查看 / 切换出图尺寸（竖 / 横 / 方 / 跟随比例） |
+| `/nai0 <英文 tag>` | 直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，自动套质量词 / 画师串 / 负面词 / 尺寸 |
+| `/nai 随机[自拍]` | 随机出图：随机创作方向交给 `nai_director` 自由发挥，`自拍` 走自拍构图 |
 
-三个命令都受 `permission_control.command_user_list` 约束。运行时切换成功但写回失败时，本次会话仍然生效，下次启动会回滚。
+所有命令都受 `permission_control.command_user_list` 约束。`/nai set` / `art` / `size` / `nsfw` 切换成功但写回失败时，本次会话仍生效，下次启动回滚。
+
+`/nai0` / `/nai 随机` 是 NAI 专属命令：当前激活预设是 NAI 时用它，否则自动回落到首个 NAI 预设；它们复用与 Action 同一套出图核心（`services/nai_draw_core`）。
+
+### 出图护栏（仅 Action）
+
+ALWAYS 激活的生图 Action 由 planner 决定何时调用，两项最小护栏兜底（显式命令不受限）：
+
+| 配置 | 作用 |
+| --- | --- |
+| `draw_respect_negative_keywords` | 用户消息明确叫停（「别画了」「不要画图」等）时跳过本次出图（默认 `true`，保守词表） |
+| `draw_min_interval_seconds` | 同一聊天两次出图最小间隔秒数，防 planner 连发 / 双触（默认 `0` = 关闭） |
 
 ---
 
@@ -353,6 +430,10 @@ global_blacklist = []
 | 自拍出现"双手捧脸" | 同上，再加 `exactly one visible hand in the frame`；并确认 `emotion_dict` / `english_extra` 没输出含 `both hands` 的 tag |
 | `daily_llm` 不更新 | 删 `.var_cache/{key}.*.json`；或检查模板是否误引用了动态内置变量 |
 | 切换预设没生效 | 写回 toml 失败的话本次仍生效但重启回滚；查日志的写回错误 |
+| NAI 出图报 400 / 提示含 CJK | 正常情况下 NAI 通路会自动清洗中文；若仍报错，检查是不是 `nai_negative` 等字段被手填了中文 |
+| NAI 画师风格没生效 | 用 `/nai art <序号>` 选一套画师串（默认未选 = 不注入）；查 `nai_artist_presets` 是否配了 |
+| `/nai0` / `/nai 随机` 报「无 NAI 预设」 | 没配 `[[nai_chat_client.presets]]`，加一个 NAI 预设即可 |
+| Action 该画却被跳过 | 看日志是否命中 `Action Guard`：用户消息含强否定词、或处于 `draw_min_interval_seconds` 节流窗口 |
 
 ---
 
@@ -369,6 +450,14 @@ global_blacklist = []
 | `extract` 模式（regex 抽取） | ✅ |
 | `daily_llm` 模式（按天缓存） | ✅ |
 | `pose_prompt` 微变量随机化（避免每张图同款手臂） | ✅ |
+| NAI 复刻：纯配置核心出图（共用大脑 + 画师串 + CJK 清洗 + 尺寸映射） | ✅ |
+| NAI 复刻：命令面（`/nai set\|models\|nsfw\|art\|size\|0\|随机`）+ NAI 单次大脑 `nai_director` | ✅ |
+| NAI 复刻：出图核心抽取（Action 与命令共用）+ Action Guard 最小护栏 | ✅ |
+| NAI 复刻：多人 `characters[]`（director 多人模板 + 自动布局拆分 + 模型嗅探降级） | ✅ |
+| NAI 复刻：i2i 图生图（独立 `nai_i2i` 预设 + 读图头对齐 `size` + 友好拒绝非标准尺寸） | ✅ |
+| NAI 复刻：Vibe Transfer + 角色参考（独立 `nai_vibe` / `nai_charref` 预设，强兼单图，charref 仅 V4.5） | ✅ |
+| NAI 复刻：vibe cache_id 复用（响应注释落 SQLite + 送图前查改写 + stale 重试，省 anlas） | ✅ |
+| NAI 复刻：会话态 / 命名图库·多图 vibe / tag 检索 / 反推 | 🚧 |
 | 独立 WebUI（替代框架自带的 ConfigLayout） | 🚧 |
 | 跨任务持久化变量 | 🚧 |
 | 决策器流式调用 | 🚧 |

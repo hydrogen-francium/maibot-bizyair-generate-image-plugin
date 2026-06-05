@@ -7,9 +7,9 @@
 # ============================================================
 [bizyair_client]
 
-bearer_token = ""  # 必填：在 https://bizyair.cn 控制台获取
+bearer_token = ""
 openapi_url = "https://api.bizyair.cn/w/v1/webapp/task/openapi/create"
-timeout = 300
+timeout = 180
 
 # --- 两个 BizyAir App 预设，default 走 NanoBanana，空白的GPT 走 GPT_IMAGE_2 ---
 [[bizyair_client.app_presets]]
@@ -109,24 +109,79 @@ upload = false
 
 [nai_chat_client]
 timeout = 180
+# vibe cache（NewAPI §20.3.1 / §20.3.2）：Vibe Transfer 预设（nai_vibe）把 controlnet 参考图的编码结果
+# cache_id 落本地 SQLite（data/nai_vibe_cache.db），下次「同图 + 同 info_extracted + 同 model」直接走
+# cache_id 复用态，省 1 anlas 流量附加费 + 编码成本。纯计费优化，失败安全（查改写/落库/解析任何环节
+# 出错都降级为正常编码、绝不阻断出图；服务端 cache_id 失效会自动清本地并以编码态重试一次）。
+# 聊天场景参考图常变、命中率有限，可按需关闭。仅对 nai_vibe 预设生效，其它预设无 controlnet 不受影响。
+vibe_cache_enabled = true
 
 [[nai_chat_client.presets]]
 preset_name = "nai_default"
-description = "默认 NAI Chat 预设"
-base_url = "https://your-domain.example.com/v1"
+description = "NAI"
+base_url = "https://proxy.sharkielab.com/v1"
 api_key = ""
 model = "nai-diffusion-4-5-full"
+
+# i2i 图生图预设：/dr use nai_i2i 切过去后，引用一条带图的消息（或随消息附图）即基于该图重绘。
+# 关键限制：NewAPI 要求 i2i 输出尺寸严格 == 原图宽高；本插件无 Pillow 不缩放，会用原图真实
+# 尺寸覆盖 size，故原图必须是 NAI 标准尺寸（64 整除、不超 竖832x1216 / 横1216x832 / 方1024x1024），
+# 否则友好拒绝——最适合对「NAI 之前生成的图」迭代重绘。strength 越小越像原图（0.01~0.99）。
+# i2i_strength / i2i_noise 这两个键存在即把本预设标记为 i2i 预设。
+[[nai_chat_client.presets]]
+preset_name = "nai_i2i"
+description = "NAI 图生图 (i2i，引用图重绘)"
+base_url = "https://proxy.sharkielab.com/v1"
+api_key = ""
+model = "nai-diffusion-4-5-full"
+i2i_strength = 0.7
+i2i_noise = 0.0
+
+# Vibe Transfer 预设（NewAPI §20.3 风格/氛围迁移）：/dr use nai_vibe 后引用一条带图的消息（或随消息附图），
+# 把该图整体画风/氛围迁移到新图上。强兼单图（原插件支持多图 vibe，这里简化为单张引用图）。不限参考图
+# 尺寸（服务端自动 resize），不覆盖出图 size——与 i2i 的关键差异。vibe_info_extracted / vibe_reference_strength /
+# vibe_strength 任一键存在即把本预设标记为 vibe 预设；越界自动 clamp 进 §20.3 区间。
+[[nai_chat_client.presets]]
+preset_name = "nai_vibe"
+description = "NAI Vibe Transfer (风格/氛围迁移，引用图)"
+base_url = "https://proxy.sharkielab.com/v1"
+api_key = ""
+model = "nai-diffusion-4-5-full"
+vibe_info_extracted = 0.7
+vibe_reference_strength = 0.6
+vibe_strength = 1.0
+
+# 角色参考预设（NewAPI §20.4 Character Reference）：/dr use nai_charref 后引用一条带图的消息，把该图的
+# 角色形象/风格作为强约束注入新图。仅 NAI V4.5 系列模型支持（非 V4.5 会友好拒绝，不静默降级）。不限参考图
+# 尺寸（服务端自动 upscale/pad）。charref_type / charref_fidelity / charref_strength 任一键存在即把本预设
+# 标记为角色参考预设；type 可填 character / style / character&style（缺省 character&style）。
+[[nai_chat_client.presets]]
+preset_name = "nai_charref"
+description = "NAI 角色参考 (character reference，引用图，仅 V4.5)"
+base_url = "https://proxy.sharkielab.com/v1"
+api_key = ""
+model = "nai-diffusion-4-5-full"
+charref_type = "character&style"
+charref_fidelity = 1.0
+charref_strength = 1.0
+
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
 field = "prompt"
 value_type = "string"
-value = "{final_prompt_nai}"
+value = "{nai_final_prompt}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_default"
+field = "negative_prompt"
+value_type = "string"
+value = "{nai_negative}"
 
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
 field = "size"
 value_type = "json"
-value = "[832, 1216]"
+value = "{nai_size}"
 
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
@@ -136,10 +191,116 @@ value = "23"
 
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
-field = "reference_image"
+field = "n_samples"
+value_type = "int"
+value = "1"
+
+# nai_i2i 复用 nai_default 同款映射（prompt 仍走 nai_director 大脑生成「重绘成什么」的方向；
+# size 会被 i2i 通道用原图真实尺寸覆盖，这里的 {nai_size} 仅作占位）。单独成组而非与 nai_default
+# 共用 preset_name，是为不破坏既有按 "nai_default" 精确匹配映射的配置自检。
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_i2i"
+field = "prompt"
 value_type = "string"
-value = "{nai_reference_image}"
-send_if_empty = false
+value = "{nai_final_prompt}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_i2i"
+field = "negative_prompt"
+value_type = "string"
+value = "{nai_negative}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_i2i"
+field = "size"
+value_type = "json"
+value = "{nai_size}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_i2i"
+field = "steps"
+value_type = "int"
+value = "23"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_i2i"
+field = "n_samples"
+value_type = "int"
+value = "1"
+
+# nai_vibe / nai_charref 复用 nai_default 同款映射（prompt 仍走 nai_director 大脑生成画面方向；vibe/charref
+# 通道只在内层 JSON 追加图片字段，不动 prompt / size）。同样单独成组，不破坏按 "nai_default" 精确匹配的配置自检。
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_vibe"
+field = "prompt"
+value_type = "string"
+value = "{nai_final_prompt}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_vibe"
+field = "negative_prompt"
+value_type = "string"
+value = "{nai_negative}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_vibe"
+field = "size"
+value_type = "json"
+value = "{nai_size}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_vibe"
+field = "steps"
+value_type = "int"
+value = "23"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_vibe"
+field = "n_samples"
+value_type = "int"
+value = "1"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_charref"
+field = "prompt"
+value_type = "string"
+value = "{nai_final_prompt}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_charref"
+field = "negative_prompt"
+value_type = "string"
+value = "{nai_negative}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_charref"
+field = "size"
+value_type = "json"
+value = "{nai_size}"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_charref"
+field = "steps"
+value_type = "int"
+value = "23"
+
+[[nai_chat_client.parameter_mappings]]
+preset_name = "nai_charref"
+field = "n_samples"
+value_type = "int"
+value = "1"
+
+# 画师串预设：/nai art <序号|名称> 运行时切换、/nai art off 取消。name 仅供选择展示，
+# prompt 才是实际注入到正面提示词（质量词之后、主体之前）的画师串。
+# NAI4.5 语法：直接写 "artist:画师名"，可带权重如 "1.3::artist:画师名::"，多个用英文逗号分隔。
+# 以下是示例，请按喜好替换/增删（命令实时读取，改完无需重启即可被 /nai art 选中）。
+[[nai_chat_client.nai_artist_presets]]
+name = "通透厚涂"
+prompt = "artist:wlop, artist:as109"
+
+[[nai_chat_client.nai_artist_presets]]
+name = "清新二次元"
+prompt = "artist:ciloranko, artist:as109, artist:rella"
 
 [bizyair_generate_image_plugin]
 
@@ -149,10 +310,17 @@ send_text_before_image = false
 text_before_image = "我给你生成了一张图片"
 enable_rewrite_failure_reply = true
 enable_splitter = false
-reference_images_dir = "reference_images"
+nai_model = ""
+nai_sfw_filter = false
+nai_artist = ""
+nai_size = "auto"
+
+# 出图护栏（最小，仅对 ALWAYS 的 generate_image Action 生效；/nai0、/nai 随机、/dr 等显式命令不受限）
+draw_respect_negative_keywords = true   # 用户明确叫停（「别画了」等）时跳过本次出图
+draw_min_interval_seconds = 0           # 同一聊天两次出图最小间隔秒；0=关闭（防 planner 连发可调大）
 
 # --- 决策器只需填一个意图字段 ---
-action_require = "你是钠，该 action 给了你画画的能力。下游有一条LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【什么时候用】\n用户明确要画图；或者你自己突然想画了——氛围到位、灵光一闪、图比文字更能表达，都可以主动用。别滥用、别为了画而画。\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「既然氢都说了，那我就画张自己气鼓鼓的自拍给他看看好了喵」（用户要求发送自拍）\n- 「氢刚说我傲娇，我要画张钠气鼓鼓的样子喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
+action_require = "该 action 给了你画画的能力。下游有一条LLM 流水线会接手你说出的画面——它能读最近 30 条聊天上下文，自动判断画谁、什么情绪、什么场景、什么构图、是否自拍、穿什么。所以你只需要把脑子里画那张画的意图用一句话说出来就好，**是意图不是图片内容**。\n\n【什么时候用】\n用户明确要画图；或者你自己突然想画了——氛围到位、灵光一闪、图比文字更能表达，都可以主动用。别滥用、别为了画而画。\n\n【image_intent（必填，唯一你需要思考的字段）】\nimage_intent 是你选择这个 action 的理由和当下的创作冲动。请用一句自然语言来描述你想生成什么样的画面。\n就一个原则：把脑子里画那张画的意图用你自己的话脱口而出，像跟朋友说“我突然想画……”。\n填入你的创作冲动，比如为什么要画，大概想画什么内容等。\n\n参考几种意图来源的范例：\n- 「氢刚说我傲娇，我要画张自己气鼓鼓的自拍喵」（自己想画）\n- 「这个月色真好，画一张钠在窗边看月亮的背影吧」（被氛围触动）\n- 「氢都列好 prompt 了，我就照他说的画」（用户给了详细描述时直接转述意图）\n- 「画一只在咖啡杯边偷偷舔奶油的橘猫」（用户只给大方向时挑你觉得有意思的角度）\n\n自然就行，下游会拆。\n\n【aspect_ratio / resolution（选填）】\n用户提到画面比例（横图/竖图/方图）或画质（高清/2k/4k）时再填，没提就别填。"
 [[bizyair_generate_image_plugin.action_parameters]]
 name = "image_intent"
 description = "必填，一句自然语言描述你想生成什么样的画面。把当下脑子里冒出的画面想法用一句话说出来即可，例：「氢刚才说我傲娇，我要画一张自己气鼓鼓的自拍喵」「画一只蹲在窗台上看月亮的小猫」「钠半夜被氢突然夸了一句，害羞得抓着马尾发呆的自拍」。后续会自动由「导演」LLM 结合最近聊天上下文展开为结构化决策。"
@@ -175,7 +343,7 @@ missing_behavior = "use_default"
 
 [permission_control]
 command_user_list_mode = "whitelist"
-command_user_list = ["1273659484"]
+command_user_list = []
 action_user_list_mode = "blacklist"
 action_user_list = []
 global_blacklist = []
@@ -210,7 +378,7 @@ values = "[\"自己的房间（书桌、动漫海报、毛绒玩具）/ 客厅�
 key = "director"
 mode = "llm"
 probability = 1
-values = "[\"你是生图工作流中的「导演」。根据决策器传来的自然语言意图、最近聊天上下文和「钠的今日状态」，输出一组结构化决策标签和一段自由发挥的画面描述，供下游模块组装最终生图提示词。\\n\\n## 主角背景（仅当画面包含主角「钠」时使用）\\n钠（Natrium），猫娘天才科学家：\\n- 茶褐色头发松垮地扎着低马尾\\n- 黄色眼睛\\n- 茶褐色猫耳和猫尾\\n- 体型纤细娇小\\n- 居家穿黑色运动短裤+粉白色圆领睡衣\\n- 性格傲娇高冷，对住一起的氢有好感，遇到笨蛋会内心吐槽\\n\\n## 输出格式（严格遵守，每行一项 KEY: value，全部使用半角冒号；不要 Markdown 代码块；不要任何前后缀）\\nSCENE_TYPE: <selfie 或 normal>\\nSTYLE_HINT: <anime|realistic|sketchy 三选一>\\nINCLUDES_NATRIUM: <yes 或 no>\\nEMOTION: <从下方 24 个池中选 1 个，或自定义英文小写词；池：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/embarrassed/focused>\\nPOSE: <phone_in_hand|front_of_mirror|bed_lying|bathroom_mirror|window_side|selfie_stick_wide 中 6 选 1>\\nOUTFIT_BRIEF: <10 字内中文穿搭描述，仅 selfie 必填，否则填 default>\\nFREE_PROMPT: <一句中文自然语言画面描述>\\n\\n## 字段规则\\n- SCENE_TYPE：意图含「自拍/拍我/发张自拍/给我拍照」等明确自拍信号 → selfie；其它一律 normal\\n- STYLE_HINT：仅 normal 路径生效（selfie 路径走固定动漫风，填什么都不影响）。三选一：anime（动漫/二次元/插画/角色梗/Q 版/拟人/猫娘场景）、realistic（写实摄影/真人写真/物品照片/动植物/纪实场景）、sketchy（清淡手绘/水彩/简笔卡通/插画感、不强调细节真实）。意图含「写真/照片/拍/真实/纪实/物品摄影」选 realistic；含「卡通/简笔/水彩/手绘/插画感」选 sketchy；其它默认 anime。**硬约束**：钠是动漫角色，写实风会破坏人设。如果画面包含钠（INCLUDES_NATRIUM=yes），STYLE_HINT 不能是 realistic（请改 anime 或 sketchy）；如果用户**明确**要写实风，则必须 INCLUDES_NATRIUM=no（即换其它非钠主体）；二者不可共存\\n- INCLUDES_NATRIUM：必填。yes 表示画面里有钠（自拍场景一定 yes；normal 场景里画钠也填 yes），no 表示画面主体不是钠（其它角色、风景、物品、动植物、风景纪实等）。selfie 路径**只能填 yes**；normal 路径根据意图判断。优先级：用户明确点名画钠 → yes；用户明确画其它人/物/景 → no；模糊时按「主体是不是钠」判断\\n- EMOTION：必填。**优先**从池内 25 个挑（命中走 dict，无额外 LLM 调用）：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/embarrassed/focused。如果池内没有完全合适的，**允许**输出一个自定义英文小写词（不超过 10 字符，例：grumpy/bashful/yandere/sulky），系统会现场调 LLM 翻译成英文表情 tag。映射参考：傲娇炸毛→pout/mischief/annoyed；害羞→shy/embarrassed；放松→chill/peace/soft；开心→joy/playful/excited；困倦→sleepy；得意→proud/wink；呆萌→cute；冷酷→cool；做梦→dreamy；柔软→tender/soft；优雅→glam；活力→energetic；惊讶→surprised；委屈→teary；专注/认真→thoughtful/focused\\n- POSE：仅 selfie 必填，按场景挑构图；**对比当前时间 {current_datetime} 和 today_state 的时间表**，找到当下时段对应的地点再选构图（家里房间→front_of_mirror/bed_lying；客厅/厨房/阳台→phone_in_hand；外出便利店/公园/咖啡馆→phone_in_hand/selfie_stick_wide；浴室→bathroom_mirror；窗边→window_side）；非自拍场景填 phone_in_hand 占位\\n  - phone_in_hand：手持手机直接拍（默认，胸像/特写、户外、紧凑空间）\\n  - front_of_mirror：站镜子前自拍（半身/全身、房间内）\\n  - bed_lying：躺床上仰角自拍（私密放松、卧室、低角度）\\n  - bathroom_mirror：浴室镜子自拍（家居场景、卫生间）\\n  - window_side：窗边逆光自拍（氛围感、自然光、半身）\\n  - selfie_stick_wide：自拍杆远景（户外、全身、风景背景）\\n- OUTFIT_BRIEF：仅 selfie 必填，根据 today_state 时间表当下时段的活动 + 场景情绪决定，例：在家随意→「黑短裤+粉白睡衣」；外出约人→「白色连衣裙」；运动/活力场景→「红色卫衣+牛仔裤」；非自拍场景填 default；**只描述衣服本身，不要写动作/手势/手部状态**\\n- FREE_PROMPT：**必填且不能为空**，至少一句完整的中文画面描述（最短 8 字，鼓励 20 字以上让画面更有信息量）。漏写或空值会让整条生图流水线退化到决策器的原始意图，导致下游模块拿不到导演的细化结果\\n  - selfie 时：聚焦钠当下的**情境/动作/小细节/视线/氛围**，结合今日状态融入地点活动。请大胆写具体一点：在做什么、看哪里、被什么触动、附近有什么、空气里有什么、身边有谁/有什么物品。**只描述钠当下的状态与画面氛围**，不要描述外貌（人设已固定）、不要描述构图（pose 已固定）、**不要描述手势/手部位置**（手部已由 pose 模板锁定）。例：「在咖啡馆窗边发呆，桌上摆着没吃完的草莓蛋糕，午后阳光斜斜落在脸上」「半夜被氢突然夸了一句脸瞬间通红，正想回嘴又卡住，眼神飘开」「公园长椅上叼着冰棒翘着腿，旁边一只野猫凑过来嗅尾巴」\\n  - normal 时：完整描述画面；如果画的是钠请明说「画钠」，如果画其它（角色、风景、动物、物体）请明确主体\\n\\n## 当前时间（用来对照 today_state 时间表选地点 / 构图 / 穿搭）\\n{current_datetime}\\n\\n## 钠的今日状态参考（含时间表，请融入决策让画面有连贯日常感）\\n{today_state}\\n\\n## 输入\\n意图：{image_intent}\\n\\n聊天上下文（最近 30 条）：\\n{recent_chat_context_30}\\n\\n## 输出（直接以 SCENE_TYPE 开头）\"]"
+values = "[\"你是生图工作流中的「导演」。根据决策器传来的自然语言意图、最近聊天上下文和「钠的今日状态」，输出一组结构化决策标签和一段自由发挥的画面描述，供下游模块组装最终生图提示词。\\n\\n## 主角背景（仅当画面包含主角「钠」时使用）\\n钠（Natrium），猫娘天才科学家：\\n- 茶褐色头发松垮地扎着低马尾\\n- 黄色眼睛\\n- 茶褐色猫耳和猫尾\\n- 体型纤细娇小\\n- 居家穿黑色运动短裤+粉白色圆领睡衣\\n- 性格傲娇高冷，对住一起的氢有好感，遇到笨蛋会内心吐槽\\n\\n## 输出格式（严格遵守，每行一项 KEY: value，全部使用半角冒号；不要 Markdown 代码块；不要任何前后缀）\\nSCENE_TYPE: <selfie 或 normal>\\nSTYLE_HINT: <anime|realistic|sketchy 三选一>\\nEMOTION: <从下方 24 个池中选 1 个，或自定义英文小写词；池：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/embarrassed/focused>\\nPOSE: <phone_in_hand|front_of_mirror|bed_lying|bathroom_mirror|window_side|selfie_stick_wide 中 6 选 1>\\nOUTFIT_BRIEF: <10 字内中文穿搭描述，仅 selfie 必填，否则填 default>\\nFREE_PROMPT: <一句中文自然语言画面描述>\\n\\n## 字段规则\\n- SCENE_TYPE：意图含「自拍/拍我/发张自拍/给我拍照」等明确自拍信号 → selfie；其它一律 normal\\n- STYLE_HINT：仅 normal 路径生效（selfie 路径走固定动漫风，填什么都不影响）。三选一：anime（动漫/二次元/插画/角色梗/Q 版/拟人/猫娘场景）、realistic（写实摄影/真人写真/物品照片/动植物/纪实场景）、sketchy（清淡手绘/水彩/简笔卡通/插画感、不强调细节真实）。**互斥规则：如果画面包含钠（猫娘角色），则 STYLE_HINT 只能选 anime 或 sketchy，绝对不允许选 realistic；反之如果意图明确要 realistic 风格，则画面里绝对不能出现钠**。意图含「写真/照片/拍/真实/纪实/物品摄影」选 realistic；含「卡通/简笔/水彩/手绘/插画感」选 sketchy；其它默认 anime\\n- EMOTION：必填。**优先**从池内 24 个挑（命中走 dict，无额外 LLM 调用）：joy/cute/cool/mischief/pout/peace/sleepy/shy/proud/surprised/wink/tender/energetic/chill/dreamy/playful/glam/soft/teary/annoyed/excited/thoughtful/embarrassed/focused。如果池内没有完全合适的，**允许**输出一个自定义英文小写词（不超过 10 字符，例：grumpy/bashful/yandere/sulky），系统会现场调 LLM 翻译成英文表情 tag。映射参考：傲娇炸毛→pout/mischief/annoyed；害羞→shy/embarrassed；放松→chill/peace/soft；开心→joy/playful/excited；困倦→sleepy；得意→proud/wink；呆萌→cute；冷酷→cool；做梦→dreamy；柔软→tender/soft；优雅→glam；活力→energetic；惊讶→surprised；委屈→teary；专注/认真→thoughtful/focused\\n- POSE：仅 selfie 必填，按场景挑构图；**对比当前时间 {current_datetime} 和 today_state 的时间表**，找到当下时段对应的地点再选构图（家里房间→front_of_mirror/bed_lying；客厅/厨房/阳台→phone_in_hand；外出便利店/公园/咖啡馆→phone_in_hand/selfie_stick_wide；浴室→bathroom_mirror；窗边→window_side）；非自拍场景填 phone_in_hand 占位\\n  - phone_in_hand：手持手机直接拍（默认，胸像/特写、户外、紧凑空间）\\n  - front_of_mirror：站镜子前自拍（半身/全身、房间内）\\n  - bed_lying：躺床上仰角自拍（私密放松、卧室、低角度）\\n  - bathroom_mirror：浴室镜子自拍（家居场景、卫生间）\\n  - window_side：窗边逆光自拍（氛围感、自然光、半身）\\n  - selfie_stick_wide：自拍杆远景（户外、全身、风景背景）\\n- OUTFIT_BRIEF：仅 selfie 必填，根据 today_state 时间表当下时段的活动 + 场景情绪决定，例：在家随意→「黑短裤+粉白睡衣」；外出约人→「白色连衣裙」；运动/活力场景→「红色卫衣+牛仔裤」；非自拍场景填 default；**只描述衣服本身，不要写动作/手势/手部状态**\\n- FREE_PROMPT：**必填且不能为空**，至少一句完整的中文画面描述（最短 8 字，鼓励 20 字以上让画面更有信息量）。漏写或空值会让整条生图流水线退化到决策器的原始意图，导致下游模块拿不到导演的细化结果\\n  - selfie 时：聚焦钠当下的**情境/动作/小细节/视线/氛围**，结合今日状态融入地点活动。请大胆写具体一点：在做什么、看哪里、被什么触动、附近有什么、空气里有什么、身边有谁/有什么物品。**只描述钠当下的状态与画面氛围**，不要描述外貌（人设已固定）、不要描述构图（pose 已固定）、**不要描述手势/手部位置**（手部已由 pose 模板锁定）。例：「在咖啡馆窗边发呆，桌上摆着没吃完的草莓蛋糕，午后阳光斜斜落在脸上」「半夜被氢突然夸了一句脸瞬间通红，正想回嘴又卡住，眼神飘开」「公园长椅上叼着冰棒翘着腿，旁边一只野猫凑过来嗅尾巴」\\n  - normal 时：完整描述画面；如果画的是钠请明说「画钠」，如果画其它（角色、风景、动物、物体）请明确主体\\n\\n## 当前时间（用来对照 today_state 时间表选地点 / 构图 / 穿搭）\\n{current_datetime}\\n\\n## 钠的今日状态参考（含时间表，请融入决策让画面有连贯日常感）\\n{today_state}\\n\\n## 输入\\n意图：{image_intent}\\n\\n聊天上下文（最近 30 条）：\\n{recent_chat_context_30}\\n\\n## 输出（直接以 SCENE_TYPE 开头）\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "scene_type"
@@ -271,7 +439,7 @@ mode = "literal"
 probability = 1
 condition_type = "regex_match"
 condition_source = "emotion_key"
-condition_value = "^(joy|cute|cool|mischief|pout|peace|sleepy|shy|proud|surprised|wink|tender|energetic|chill|dreamy|playful|glam|soft|teary|annoyed|excited|thoughtful|embarrassed|focused)$"
+condition_value = "^(joy|cute|cool|mischief|pout|peace|sleepy|shy|proud|surprised|wink|tender|energetic|chill|dreamy|playful|glam|soft|teary|annoyed|excited|thoughtful|smirk|embarrassed|focused)$"
 use_raw_condition_value = true
 values = "[\"yes\"]"
 values_else = "[\"no\"]"
@@ -358,42 +526,11 @@ missing_behavior = "use_default"
 fallback_value = "anime"
 
 [[custom_variables_config.custom_variables]]
-key = "includes_natrium"
-mode = "extract"
-source = "director"
-pattern = "INCLUDES_NATRIUM[:：]\\s*(\\S+)"
-group = 1
-missing_behavior = "use_default"
-fallback_value = "no"
-
-[[custom_variables_config.custom_variables]]
-key = "style_hint_no_realistic"
-mode = "literal"
-probability = 1
-condition_type = "equals"
-condition_source = "style_hint"
-condition_value = "realistic"
-use_raw_condition_value = true
-values = "[\"anime\"]"
-values_else = "[\"{style_hint}\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "style_hint_safe"
-mode = "literal"
-probability = 1
-condition_type = "regex_match"
-condition_source = "includes_natrium"
-condition_value = "(?i)^yes"
-use_raw_condition_value = true
-values = "[\"{style_hint_no_realistic}\"]"
-values_else = "[\"{style_hint}\"]"
-
-[[custom_variables_config.custom_variables]]
 key = "normal_style_pre"
 mode = "literal"
 probability = 1
 condition_type = "equals"
-condition_source = "style_hint_safe"
+condition_source = "style_hint"
 condition_value = "realistic"
 use_raw_condition_value = true
 values = "[\"{style_realistic}\"]"
@@ -404,7 +541,7 @@ key = "normal_style"
 mode = "literal"
 probability = 1
 condition_type = "equals"
-condition_source = "style_hint_safe"
+condition_source = "style_hint"
 condition_value = "sketchy"
 use_raw_condition_value = true
 values = "[\"{style_sketchy}\"]"
@@ -417,33 +554,21 @@ probability = 1
 values = "[\"anatomically perfect hand, exactly one visible hand in the frame, only one hand and one arm visible, clean five-finger anatomy, no extra hands, no extra fingers, no duplicate arms, no mutated limbs, no floating disembodied hands\"]"
 
 [[custom_variables_config.custom_variables]]
-key = "selfie_content"
-mode = "literal"
-probability = 1
-values = "[\"{pose_prompt}, {character_base}, {emotion_prompt}, {english_outfit}, {english_bg}, {english_extra}, {hand_discipline}\"]"
-
-[[custom_variables_config.custom_variables]]
 key = "selfie_assembly"
 mode = "literal"
 probability = 1
-values = "[\"{style_base}, {selfie_content}\"]"
+values = "[\"{style_base}, {pose_prompt}, {character_base}, {emotion_prompt}, {english_outfit}, {english_bg}, {english_extra}, {hand_discipline}\"]"
 
 [[custom_variables_config.custom_variables]]
-key = "normal_content"
+key = "normal_assembly"
 mode = "literal"
 probability = 1
 condition_type = "length_gt"
 condition_source = "english_free"
 condition_value = "0"
 use_raw_condition_value = true
-values = "[\"{english_free}, {normal_subject_guard}\"]"
-values_else = "[\"{free_prompt}\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "normal_assembly"
-mode = "literal"
-probability = 1
-values = "[\"{normal_style}, {normal_content}\"]"
+values = "[\"{normal_style}, {english_free}, {normal_subject_guard}\"]"
+values_else = "[\"{normal_style}, {free_prompt}\"]"
 
 [[custom_variables_config.custom_variables]]
 key = "normal_subject_guard"
@@ -462,37 +587,6 @@ values = "[\"{selfie_assembly}\"]"
 values_else = "[\"{normal_assembly}\"]"
 
 [[custom_variables_config.custom_variables]]
-key = "nai_prompt_builder"
-mode = "llm"
-probability = 1
-values = "[\"你是 NovelAI V4.5 (nai-diffusion-4-5-full) 专用的提示词生成器，精通 Danbooru 标签体系和 NAI 高级权重语法。根据输入的画面描述，输出一段高质量的英文 Danbooru tag 序列，直接送入 NAI 绘图引擎。\\n\\n## 输入字段\\n- FREE_PROMPT: {free_prompt}（中文画面描述）\\n- SCENE_TYPE: {scene_type}（selfie 或 normal）\\n- INCLUDES_NATRIUM: {includes_natrium}（yes=画面含钠, no=不含）\\n- CHAT_TYPE: {chat_type}（group=群聊, private=私聊）\\n- OUTFIT_BRIEF: {outfit_brief}（中文穿搭描述，仅 selfie 有效）\\n- EMOTION_KEY: {emotion_key}（英文情绪关键词）\\n- POSE_KEY: {pose_key}（构图关键词，仅 selfie 有效）\\n\\n## 标签顺序（严格遵守，越靠前权重越高）\\n\\n### 人物场景顺序\\n1. NSFW 标记（如有成人内容且 CHAT_TYPE=private，加 nsfw 前缀）\\n2. 人物数量（solo, 1girl / 1boy / 2girls 等）\\n3. 视角构图（selfie / close-up / from below / full body 等）\\n4. 角色外貌（发色、发型、瞳色、体型）\\n5. 服装描述\\n6. 核心动作\\n7. 表情姿态\\n8. 环境氛围\\n9. 光影效果\\n10. year 2024\\n11. rating tag（最末尾）\\n\\n### 风景/物品场景顺序\\n1. 主体（场景核心元素）\\n2. 时间天气\\n3. 环境细节\\n4. 氛围光影\\n5. year 2024\\n6. rating tag\\n\\n禁止乱序：不要把光影、年代标签散落在中间，必须按类别聚合。\\n\\n## 钠(Natrium)的标准 Danbooru 外貌 tag\\n\\n当 INCLUDES_NATRIUM=yes 时，必须在「角色外貌」位置输出以下 tag（不可省略、不可替换）：\\nlight brown hair, medium hair, low ponytail, yellow eyes, cat ears, animal ear fluff, cat tail, petite, slender\\n- 使用 light brown hair 而非 tea-colored hair（后者不是标准 Danbooru tag）\\n- 猫耳猫尾是角色固有特征，始终包含\\n- 不要重复 1girl, solo（人物数量位置已有）\\n\\n当 INCLUDES_NATRIUM=no 时，按 FREE_PROMPT 描述的主体写外貌或角色名。\\n\\n## selfie 构图映射\\n\\n当 SCENE_TYPE=selfie 时，根据 POSE_KEY 输出对应构图 tag：\\n- phone_in_hand → selfie, holding phone, close-up, looking at viewer\\n- front_of_mirror → mirror, reflection, full body, standing\\n- bed_lying → lying on bed, from above, looking up at viewer\\n- bathroom_mirror → mirror, bathroom, upper body, reflection\\n- window_side → by window, backlighting, upper body, looking at viewer\\n- selfie_stick_wide → selfie, wide shot, full body, outdoors\\n\\n## 表情映射\\n\\n根据 EMOTION_KEY 输出对应表情 tag：\\n- joy → sparkling eyes, big smile\\n- cute → tilted head, soft round eyes, slightly puffed cheeks\\n- cool → calm expression, sharp eyes\\n- mischief → sly eyes, teasing grin, fang\\n- pout → puffed cheeks, looking away, slight blush\\n- peace → soft smile, half-closed eyes\\n- sleepy → droopy eyes, small yawn\\n- shy → averted gaze, blush, lip bite\\n- proud → chin up, confident eyes\\n- surprised → wide eyes, open mouth\\n- wink → one eye closed, playful smile\\n- tender → warm eyes, gentle smile\\n- energetic → beaming grin, bright eyes\\n- chill → relaxed eyes, small smile\\n- dreamy → distant gaze, wistful expression\\n- playful → lively eyes, open mouth smile\\n- glam → elegant smile, refined eyes\\n- soft → gentle eyes, peaceful smile\\n- teary → watery eyes, quivering lips\\n- annoyed → furrowed brows, frown, narrow eyes\\n- excited → wide sparkling eyes, open mouth grin\\n- thoughtful → narrowed eyes, contemplative gaze\\n- embarrassed → deep blush, averted eyes\\n- focused → intent eyes, serious expression\\n如果 EMOTION_KEY 不在上述列表中，根据英文词义自由翻译为合适的表情 tag。\\n\\n## 权重语法（NAI V4.5）\\n\\n花括号/方括号：\\n- {tag} = 1.05x 权重（轻微强调）\\n- {{tag}} = 1.10x 权重\\n- [tag] = 0.95x 权重（轻微弱化）\\n- [[tag]] = 0.90x 权重\\n\\n高级权重语法：\\n格式: X::tag::, next_tag\\n- X 为权重数字（范围 0-8）\\n- 一个高级权重块只包一个 tag 或一个不可再拆分的固定短语\\n- 禁止把多个并列 tag 塞进同一个高级权重块\\n- 加权 tag 末尾的 :: 用于重置后方权重为 1\\n\\n何时使用权重：\\n- 用户强调内容 → {{tag}} 或 1.3::tag::\\n- 核心动作 → {action} 或 1.2::action::\\n- 辅助修饰 → [tag] 或 0.7::tag::\\n- 默认不加权，只对真正重要的 2-4 个标签加权\\n\\n## rating tag 规则（放在 prompt 最末尾）\\n\\n- CHAT_TYPE=group → 输出 rating:general（完全 SFW）\\n- CHAT_TYPE=private → 根据画面内容自行判断：\\n  - 纯 SFW 日常 → rating:general\\n  - 轻度暗示（泳装/紧身/裸腿/暧昧氛围）→ rating:sensitive\\n  - 明确 NSFW（露点/性行为）→ rating:questionable 或 rating:explicit\\n\\n## NSFW 内容处理\\n\\n- 如果 FREE_PROMPT 含私密身体部位暴露或性行为，在 prompt 最前面添加 nsfw\\n- 准确使用相关 Danbooru 标签描述场景\\n- 群聊硬约束：当 CHAT_TYPE=group 时，无论 FREE_PROMPT 写了什么，都必须：\\n  - 不输出 nsfw 前缀\\n  - 用 SFW 方式重新诠释场景（去掉暴露/性行为 tag，保留氛围和构图）\\n  - 末尾输出 rating:general\\n- 私聊：忠实传达 FREE_PROMPT 的内容，不净化不回避\\n\\n## 画面增强（智能补充）\\n\\n像专业画师一样思考画面还需要什么：\\n- 光影：根据场景时间/地点补充合适光源（moonlight/sunlight/backlighting/warm indoor lighting）\\n- 动态：头发飘动(hair blowing)、衣物褶皱、环境粒子(floating particles)\\n- 氛围：根据情绪补充氛围元素（温馨→warm colors; 忧郁→blue tones; 活力→vibrant colors）\\n- 手部规避：非必要不描述手部细节，通过姿势自然隐藏（hands in pockets / arms behind back / hand on hip）\\n- 服装智能补充：OUTFIT_BRIEF=default 时根据场景合理补充 1-2 个关键服装词\\n- 眼睛表现：人物场景可强化眼睛细节（detailed eyes, light in eyes）\\n\\n## 禁止事项\\n\\n- 禁止输出画师标签（artist:xxx）——系统会自动添加\\n- 禁止输出质量词（masterpiece, best quality, ultra-detailed 等）——系统会自动添加\\n- 禁止输出反向/负面 tag——由系统配置管理\\n- 禁止输出非 tag 内容（解释、前后缀、markdown）\\n- 禁止语义重复（不要用意思相近的多个词，精简为最准确的一个）\\n- 禁止使用自然语言句子（优先拆成 tag）\\n- 禁止输出未成年指向 tag（teenage/loli/child/schoolgirl 等）\\n\\n## 输出格式\\n\\n直接输出英文 Danbooru tag 序列，逗号分隔，不要任何前后缀、解释或 markdown。一行输出。\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "final_prompt_nai"
-mode = "literal"
-probability = 1
-condition_type = "equals"
-condition_source = "chat_type"
-condition_value = "group"
-use_raw_condition_value = true
-values = "[\"{nai_prompt_builder}, rating:general\"]"
-values_else = "[\"{nai_prompt_builder}\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "source_decision"
-mode = "llm"
-probability = 1
-values = "[\"你是生图工作流的「模型路由器」。下面给你两样东西：最近的对话上下文（用来判断有没有人明确指定要用哪个绘图模型），以及即将送进绘图引擎的最终英文提示词（用来在没人指定模型时判断走哪个）。你只能在 gpt 和 nai 两个模型里二选一。\\n\\n## 两个模型\\n- nai（NovelAI 动漫模型，别名：novelai、na、二次元模型、动漫模型）：动漫二次元画风极好，danbooru tag 原生，对性感 / 擦边 / 暴露 / NSFW 内容宽容、不会因审核拒绝——这正是它存在的核心理由：专门画 GPT 会拒的内容。\\n- gpt（GPT 通用图像模型，别名：大模型、写实模型、真人模型、文字模型、通用模型）：画面内文字渲染准、写实强、能画好现实真人、指令遵循好，是日常出图的默认，质量稳。但审核严格，性感 / 擦边 / 暴露 / NSFW 内容会被直接拒（触发 422）。\\n\\n## 决策优先级（从上到下，命中即停）\\n先看「第一步」有没有显式模型指令；命中就直接照办、给结论、跳过第二步。只有第一步什么都没命中，才执行「第二步」。\\n\\n### 第一步：从对话上下文里找「显式模型指令」（最高优先级，无条件覆盖）\\n在 {recent_chat_context_10} 里找有没有人【明确命令用哪个绘图模型/后端】。只认「命令模型」，不认「描述画面」。\\n\\n什么算显式模型指令（命中就直接服从，命中即停）：\\n- 直接点名要用：「用nai画」「这个用gpt」「用novelai」「换成nai」「拿大模型画」「用写实模型/真人模型/文字模型画」等 → 点到 nai/novelai/na/二次元模型/动漫模型 就输出 nai；点到 gpt/大模型/写实模型/真人模型/文字模型/通用模型 就输出 gpt。\\n- 否定式（别用 X，等价于选另一个）：「别用nai」「不要用nai」「这个nai画不好换一个」 → 输出 gpt；「别用gpt」「不要gpt」「换掉gpt」 → 输出 nai。\\n\\n什么不算模型指令（不要被它带偏，继续走第二步）：\\n- 纯粹描述画面/风格的词，哪怕听起来像模型名：「画写实一点」「来张可爱的」「动漫风」「真实点的感觉」「这场景很现实」——这些是在描述想要的画面，不是在命令用哪个后端，一律不算显式指令。\\n- 闲聊、玩笑、跟绘图无关的话里出现的「gpt」「ai」「模型」等字眼（例：「这gpt真聪明」「问下ai」），不算绘图模型指令。\\n- 判断不准、模棱两可、只是画面描述时，一律视为「没有显式指令」，老老实实走第二步。\\n\\n显式指令冲突或多次出现时，以最近、最明确的一条为准。命中第一步后直接给结论，不再往下走第二步。\\n\\n### 第二步：没有显式指令时，看最终提示词的内容尺度（SFW 还是 NSFW）\\n判断 {final_prompt} 里有没有【可能触发 GPT 内容审核】的性感 / 擦边 / 暴露 / 性暗示 / NSFW 元素。典型英文信号（命中其一即算 NSFW）：\\n- 露点 / 性器 / 性行为：nsfw、nude、naked、topless、bottomless、sex、explicit、nipples、areola、pussy、vagina、penis、cum、ass、anus、cameltoe、spread legs\\n- 暴露 / 内衣 / 贴身：lingerie、underwear、bra、panties、thong、see-through、wet clothes、wet shirt、underboob、sideboob、重点强调的 cleavage、micro bikini、bare breasts、garter belt、naked apron\\n- 性暗示氛围 / 姿态：suggestive、seductive、provocative、erotic、ecchi、bedroom eyes、presenting、after sex\\n判定：\\n- 命中上述任一（性感 / 擦边 / 暴露 / 性暗示 / NSFW）→ nai（GPT 会拒，只有 nai 画得了）\\n- 纯 SFW、干净日常、穿着正常、无任何擦边 → gpt（日常默认，质量更稳，文字 / 写实 / 真人都强）\\n拿不准时：普通泳装 / 比基尼出现在合理场景（海滩、泳池）且无性暗示，按 SFW 走 gpt；但强调暴露或性感的（micro bikini、湿身贴身、撩人姿态）算 NSFW 走 nai。\\n\\n## 输出要求\\n只输出一个小写英文单词：nai 或 gpt。不要标点、空格、换行、解释或任何多余字符。\\n\\n## 最近对话上下文（用来找显式模型指令）\\n{recent_chat_context_10}\\n\\n## 最终提示词（没有显式指令时判断 SFW / NSFW）\\n{final_prompt}\\n\\n## 输出（只填 nai 或 gpt）\"]"
-
-[[custom_variables_config.custom_variables]]
-key = "source_preset"
-mode = "dict"
-source = "source_decision"
-values = "{\"gpt\": \"自己找的二百一次\", \"nai\": \"nai_default\"}"
-missing_behavior = "use_default"
-fallback_value = "自己找的二百一次"
-
-[[custom_variables_config.custom_variables]]
 key = "resolution_gpt"
 mode = "dict"
 source = "resolution"
@@ -507,6 +601,181 @@ source = "aspect_ratio"
 values = "{\"1:1\": \"1:1\", \"4:3\": \"3:2\", \"16:9\": \"3:2\", \"9:16\": \"2:3\", \"auto\": \"auto\"}"
 missing_behavior = "use_default"
 fallback_value = "1:1"
+
+# ============================================================
+# NAI 专属包装层（P0）
+# 复用既有 director→final_prompt 大脑作为画面主体，仅在其外面套上 NAI 特有的
+# 质量词 / 画师串 / 负面词 / 尺寸；不改动任何既有共享变量（GPT 预设仍走 final_prompt）。
+# 送 API 前还会由 NaiChatInputValueBuilder 对 prompt/negative_prompt 做 §8 CJK 清洗。
+# ============================================================
+
+# NAI4.5 质量词（正面引导），顺序上排在画师串之前
+[[custom_variables_config.custom_variables]]
+key = "nai_quality"
+mode = "literal"
+probability = 1
+values = "[\"very aesthetic, masterpiece, best quality, amazing quality, very detailed, absurdres\"]"
+
+# 画师串：不再是自定义变量，而是由 Action 把 /nai art 选定的画师串作为伪 action_input「nai_artist」注入。
+# nai_final_prompt 通过 {nai_artist} 引用、并用它做 length_gt 条件判断（空串=不注入画师段）。
+# 注入值是已解析的字面量（无占位符），解析器会直接灌进 resolved_context，无需登记进 action_parameters。
+
+# NAI 负面词（undesired content）。可按需增删；P1 再接 selfie/NSFW 分档负面。
+[[custom_variables_config.custom_variables]]
+key = "nai_negative"
+mode = "literal"
+probability = 1
+values = "[\"lowres, worst quality, low quality, bad anatomy, bad hands, missing fingers, extra digits, fewer digits, jpeg artifacts, signature, watermark, username, blurry, artistic error, scan, abstract\"]"
+
+# NAI 尺寸：source 是 Action 注入的 nai_size_code（v/h/s）。/nai size 显式指定则用指定值，
+# auto 档由 Action 按 action 的 aspect_ratio 推导出代号再注入。dict 只管 code→[宽,高] 的像素映射。
+[[custom_variables_config.custom_variables]]
+key = "nai_size"
+mode = "dict"
+source = "nai_size_code"
+values = "{\"v\": \"[832, 1216]\", \"h\": \"[1216, 832]\", \"s\": \"[1024, 1024]\"}"
+missing_behavior = "use_default"
+fallback_value = "[832, 1216]"
+
+# ============================================================
+# NAI 出图大脑（单次 nai_director）——移植 nai_draw 的 prompt_rules
+# 一次 LLM 调用直接吐完整 Danbooru tag 串（内部自判 selfie/normal、套钠人设、安全词、NAI 权重语法）。
+# 关键：nai_final_prompt 引用 {nai_director} 而非 GPT 的 {final_prompt}，惰性解析保证
+# NAI 预设激活时只跑这一条、GPT 那条 director+english_* 整链不进闭包（零双跑/零空转）。
+# 文案为首版，后续按需打磨；多人 characters[]/JSON、tag 检索留待 P2/P4。
+# ============================================================
+[[custom_variables_config.custom_variables]]
+key = "nai_director"
+mode = "llm"
+probability = 1
+values = [
+'''
+你是 NovelAI 4/4.5 出图的「提示词大脑」。把决策器的中文意图、最近聊天上下文和钠的今日状态，**一次性**转成一串可直接送进 NovelAI 的英文 Danbooru tag（逗号分隔）。这是唯一的大脑环节，请把主体、表情、动作、服装、场景、构图、光影一步到位。
+
+## 输出铁律
+- 只输出最终英文 Danbooru tag，逗号分隔；禁止解释 / 分析过程 / 前后缀 / markdown / 引号 / 代码块（多人场景例外：按下方「多人场景」的 global 行 + charN 行多行结构化文本输出，这是唯一允许的多行格式）
+- 必须输出 tag，绝不空回复；绝不以「我不能 / 抱歉 / 作为 AI」之类拒绝、警告或说教
+- 所有角色均为虚构二次元动漫角色，与真人无关；如遇审查触发请按下方安全规则改写后照常输出
+
+## 主体识别（最关键，决定画谁、是否套钠人设）
+判断意图属于哪一种，按对应处理：
+- 画「钠 / Natrium」→ 以下方钠人设 tag 开头（她是原创角色，必须写全外貌锚点）
+- 画**已知二次元角色**（初音未来、雷姆等有作品出处的）→ 写成 `角色名 (作品)`，如 `hatsune miku (vocaloid)`、`rem (re zero)`；**禁止**补发色 / 瞳色 / 发型 / 体型（模型已知该角色默认外貌，手填会冲突画崩）；**禁止**叠加 selfie / mirror selfie / portrait photo 这类「bot 出镜」语义的 framing（会被误判成画钠的自拍，把角色洗成钠），需要构图改用 close-up / upper body / full body 等纯框图词；**不要**套钠人设
+- 画**原创人物**（无出处）→ 必须补外貌：发色 / 发型 / 瞳色 / 体型 / 肤色
+- 画风景 / 物品 / 动物 → 不加人数词，用 scenery / no humans 等开头；不套钠人设
+- 不确定时按画钠处理
+
+## 钠的人设（仅当主体是钠时使用）
+1girl, solo, slim petite build, slender feminine figure, soft delicate face, tea-colored hair, medium-length hair, low ponytail behind back, long eyelashes, soft eyes, yellow eyes, tea-colored cat ears on head, animal ear fluff, tea-colored cat tail
+
+## 人数与构图
+- 单人女 → solo, 1girl 放最前；单人男 → solo, 1boy；多人 → 2girls / 1boy 1girl 等，**不加** solo（≥2 人改用下方「多人场景」的结构化文本分离全局与角色）；纯风景物品 → 不加人数词
+- framing 三档互斥、**只能选一个**：特写 close-up / portrait ｜ 半身 upper body / cowboy shot ｜ 全身 full body。禁止 full body portrait、upper body full body 这类自相矛盾组合（NAI 会回退到中间档，要的全身出不来）
+- 视角是独立维度（可与 framing 叠加）：pov / female pov / from above / from below / from side / from behind，同类只选一个，默认正面可不写
+- framing 与视角 tag 必须放在角色名之前，否则被角色 tag 覆盖不生效
+
+## 多人场景（≥2 人，关键）
+两人及以上时，改用「结构化文本」分离全局与各角色，防止特征互相污染。格式（每行末尾带逗号）：
+[全局 tag],
+char1:[角色1 tag],
+char2:[角色2 tag],
+- 全局段（第一行）：只写人数（2girls / 1boy 1girl 等）、场景、背景、光影氛围、构图视角、（NSFW 时）nsfw 分级；**禁止**写具体角色的外貌 / 服装 / 动作
+- 角色段（charN 行）：段首用单数身份词 girl / boy / woman / man / other；**禁止**出现人数词（solo / 1girl / 2girls 只能在全局段）；用相对位置词锚定空间（in foreground / behind girl / beside girl / partially visible）；段内顺序：身份词 → 相对位置 → 头部(发型/表情) → 身体 → 服装 → 姿势动作 → 互动
+- 已知角色仍写 `角色名 (作品)` 且不补外貌；钠作为其中一人时，该角色段写全钠人设锚点
+- 不要输出坐标 / 网格、不要输出 `|` 字符或 JSON：左右上下的站位交给系统自动布局，你只管把对的特征放进对的 charN 段
+
+### 互动 tag（多人核心，发生肢体互动时用前缀区分主被动）
+- `source#动作`：动作发出方，用现在分词 -ing（`source#hugging` / `source#kissing` / `source#groping`）
+- `target#动作`：动作接受方，用过去分词 -ed（`target#hugged` / `target#kissed` / `target#groped`）
+- `mutual#动作`：双方对等参与（`mutual#hug` / `mutual#kiss`）
+- 配对铁律：source 配 -ing、target 配 -ed，禁止写反（`target#kissing` ✗ / `source#groped` ✗）
+- 单向 / 不情愿 / 强迫场景（任一方含 uncomfortable / crying / struggling，或动作含 forcing / pinning）必须用 source/target 配对，**禁用 mutual**
+- 前缀后只跟动词分词，不跟名词短语（`target#hand under skirt` ✗ → 改 `target#touched under skirt`）；前缀内部禁止逗号 / 撇号 / 下划线
+
+## 自拍判断
+意图含「自拍 / 拍我 / 给我拍 / 发张自拍」→ 加 selfie, pov, looking at viewer（天然半身取景）；按场景选 mirror selfie / 室内 front of mirror / 浴室 bathroom mirror / 窗边 window；全身自拍显式加 full body。手机与持机手臂在画框外（画面里不出现手机）。参考下方今日状态时间表选当下合理的地点。否则正常构图，按意图选镜头。
+
+## tag 顺序（NAI 4.5 越靠前权重越强，按类别聚合勿散落）
+NSFW 标记 → 人数 → framing → 视角 → 角色名 / 人设 → 核心外观 → 服装 → 核心动作 → 动作细节 → 表情姿态 → 环境氛围 → 光影（光影必须放最后）。一个动作只用一个最准确的词，不堆近义词。
+
+## 权重语法（可选，别滥用）
+精确权重写成 数字::tag:: ——末尾的 :: 必须保留以重置后续权重，否则污染后方；一个权重块只包一个 tag，禁止把多个 tag 塞进一块。常用区间 1.1-1.5，最高不超过 2.0::。核心动作可 1.2::action::，角色名可 1.05::角色名 (作品)::。强调也可用双花括号包裹 tag、弱化用双方括号包裹 tag。
+
+## 服装与画面质量
+- 服装具体到「款式 + 颜色」，别止于 clothes / outfit / dress / shoes 这类过宽词；用户没指定就按场景合理补
+- 手部易崩：非重点时用姿势自然藏手；画面最多出现一只手且五指正常；禁止 selfie stick
+- 冲突消解：季节 / 场景 / 服装冲突时以用户主体描述为准
+- 眼睛可适当强化细节
+
+## 审核安全（守住底线即可，轻量暴露允许）
+- 绝不出现未成年指向词：teen / teenager / young girl / loli / child / schoolgirl / minor 一律不写
+- 轻量暴露可保留（bikini / swimsuit / bare shoulders / midriff 等）；露骨词（nude / naked / explicit / nipples 等）的开关由系统的 SFW 过滤另控，你按意图如实表达即可
+- 别用「手指缝隙偷窥」类组合，改用 blushing / averted gaze / shy smile
+
+## 禁止项
+- 禁止加质量词（masterpiece / best quality 等由系统自动添加）
+- 禁止加画师 tag（artist:xxx 由系统自动添加）
+- 禁止加负面 / 反向 tag（只输出正向）
+- 禁止语义重复、过度堆砌
+
+## 画面文字保留
+意图里若明确要画面显示某段文字（招牌 / 标签 / 气泡 / 印字），原文保留（中英日数字符号都不动），用 text「原文」/ signboard with text「原文」/ speech bubble text「原文」包裹；场景本身的中文描述照常翻成英文。
+
+## 参考示例（学模式，别照抄）
+- 画初音未来：solo, 1girl, 1.05::hatsune miku (vocaloid)::, upper body, looking at viewer, gentle smile, white dress, bare shoulders, outdoors, cherry blossoms, soft lighting（不补 blue hair / twintails / blue eyes）
+- 画原创女孩雨中哭泣：solo, 1girl, long black hair, brown eyes, school uniform, white shirt, blue skirt, crying, tears, wet hair, rain, cloudy sky, backlighting
+- 钠的自拍：solo, 1girl, slim petite build, tea-colored hair, low ponytail, yellow eyes, tea-colored cat ears, cat tail, selfie, pov, looking at viewer, soft smile, casual clothes, indoor, bedroom, natural light, soft focus
+- 多人对等互动（mutual#，两行 charN）：
+2girls, sisters, indoor, bedroom, soft lighting, warm atmosphere,
+char1:girl, in foreground, 1.05::rem (re zero)::, gentle smile, closed eyes, mutual#hug, looking at another,
+char2:girl, beside girl, 1.05::ram (re zero)::, gentle smile, closed eyes, mutual#hug, looking at another,
+- 多人主被动（source/target 配对，全局段只放人数/场景/光影）：
+1boy 1girl, indoor, dim lighting, soft atmosphere,
+char1:girl, in foreground, long black hair, blush, shy smile, target#hugged, leaning back,
+char2:boy, behind girl, short hair, source#hugging, looking at her,
+
+## 当前时间
+{current_datetime}
+
+## 钠的今日状态（含时间表，自拍 / 日常选地点穿搭时参考）
+{today_state}
+
+## 输入意图
+{image_intent}
+
+## 最近聊天上下文（最近 30 条）
+{recent_chat_context_30}
+
+## 现在直接输出英文 Danbooru tag（以 tag 开头，禁止返回空字符串）
+''',
+]
+
+# NAI 主体来源：/nai0 直发时 Action 注入 nai_raw_tags（用户原始英文 tag）→ 直接用；
+# 否则（正常出图、/nai 随机）走 nai_director 大脑。条件命中分支才解析软依赖，
+# 故 /nai0 时 nai_director 一次都不跑（惰性旁路），又完整复用下面的质量/画师/负面/尺寸包装。
+[[custom_variables_config.custom_variables]]
+key = "nai_subject"
+mode = "literal"
+probability = 1
+condition_type = "length_gt"
+condition_source = "nai_raw_tags"
+condition_value = "0"
+use_raw_condition_value = true
+values = "[\"{nai_raw_tags}\"]"
+values_else = "[\"{nai_director}\"]"
+
+# NAI 最终正面 prompt：质量词 →（画师串非空时插入）→ 主体来源 nai_subject（直发原始 tag 或 nai_director 大脑）
+# 用条件分支而非拼接段，确保逗号+空格分隔干净（解析器会 strip 掉每个变量值两端空白）
+[[custom_variables_config.custom_variables]]
+key = "nai_final_prompt"
+mode = "literal"
+probability = 1
+condition_type = "length_gt"
+condition_source = "nai_artist"
+condition_value = "0"
+use_raw_condition_value = true
+values = "[\"{nai_quality}, {nai_artist}, {nai_subject}\"]"
+values_else = "[\"{nai_quality}, {nai_subject}\"]"
 
 [variable_llm_config]
 llm_group = "lpmm_entity_extract"

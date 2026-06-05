@@ -6,6 +6,15 @@ from src.plugin_system.base.component_types import ActionInfo, CommandInfo, Even
 from src.plugin_system.base.config_types import ConfigLayout, ConfigTab
 from .components.dr_commands import DrListCommand, DrSwitchCommand, DrUseCommand
 from .components.generate_image_action import GenerateImageAction
+from .components.nai_commands import (
+    Nai0Command,
+    NaiArtCommand,
+    NaiModelsCommand,
+    NaiNsfwCommand,
+    NaiRandomCommand,
+    NaiSetCommand,
+    NaiSizeCommand,
+)
 from .services import build_action_parameters, permission_manager
 
 logger = get_logger("bizyair_generate_image_plugin")
@@ -91,6 +100,11 @@ DEFAULT_NAI_PARAMETER_MAPPINGS = [
     {"preset_name": "nai_default", "field": "prompt", "value_type": "string", "value": "{english_prompt}"},
     {"preset_name": "nai_default", "field": "size", "value_type": "json", "value": "[832, 1216]"},
     {"preset_name": "nai_default", "field": "steps", "value_type": "int", "value": "23"},
+]
+
+DEFAULT_NAI_ARTIST_PRESETS = [
+    {"name": "通透厚涂", "prompt": "artist:wlop, artist:as109"},
+    {"name": "清新二次元", "prompt": "artist:ciloranko, artist:as109, artist:rella"},
 ]
 
 DEFAULT_PERMISSION_USER_LIST = []
@@ -336,6 +350,29 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 default=180.0,
                 description="调用 NAI Chat 和解析图片的超时时间（秒）。",
             ),
+            "nai_artist_presets": ConfigField(
+                type=list,
+                item_type="object",
+                item_fields={
+                    "name": {
+                        "type": "string",
+                        "label": "预设名称",
+                        "placeholder": "例如 通透厚涂，仅供 /nai art 选择展示",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "label": "画师串",
+                        "input_type": "textarea",
+                        "placeholder": '注入到正面提示词的画师 tag，例如 "artist:wlop, artist:as109"',
+                    },
+                },
+                default=DEFAULT_NAI_ARTIST_PRESETS,
+                description=(
+                    "NAI 画师串预设列表，供命令 /nai art <序号|名称> 运行时切换、/nai art off 取消。"
+                    " name 仅供选择展示，prompt 才是实际注入到正面提示词（质量词之后、主体之前）的画师串。"
+                    " 命令实时读取，编辑后无需重启即可被选中；不参与 action 决策。"
+                ),
+            ),
         },
         "bizyair_generate_image_plugin": {
             "action_enabled": ConfigField(
@@ -367,6 +404,37 @@ class BizyAirGenerateImagePlugin(BasePlugin):
                 type=bool,
                 default=False,
                 description="当启用失败回复重写时，是否对重写结果启用分段发送。",
+            ),
+            "nai_model": ConfigField(
+                type=str,
+                default="",
+                description="NAI 模型全局覆盖（命令 /nai set）。填模型全名或留空使用各 NAI 预设自带 model；仅对 NAI 预设生效。",
+            ),
+            "nai_sfw_filter": ConfigField(
+                type=bool,
+                default=False,
+                description="NAI SFW 过滤开关（命令 /nai nsfw）。开启后送 NAI 前剔除 bikini/cleavage 等擦边 tag；默认关闭（允许轻量暴露）。",
+            ),
+            "nai_artist": ConfigField(
+                type=str,
+                default="",
+                description="NAI 画师串（命令 /nai art）。存的是已解析的画师 tag 全名（如 artist:wlop），空=不注入；仅对 NAI 预设生效。",
+            ),
+            "nai_size": ConfigField(
+                type=str,
+                choices=["auto", "v", "h", "s"],
+                default="auto",
+                description="NAI 出图尺寸代号（命令 /nai size）。v=竖 832x1216 / h=横 1216x832 / s=方 1024x1024 / auto=跟随画面比例；仅对 NAI 预设生效。",
+            ),
+            "draw_respect_negative_keywords": ConfigField(
+                type=bool,
+                default=True,
+                description="出图护栏：用户消息明确叫停出图（如「别画了」「不要画图」）时跳过本次 Action 出图。保守词表、低误伤；仅 Action 生效，命令不受限。",
+            ),
+            "draw_min_interval_seconds": ConfigField(
+                type=float,
+                default=0.0,
+                description="出图护栏：同一聊天两次 Action 出图的最小间隔秒数，防 planner 连发/双触。0=关闭（默认）；仅 Action 生效，命令不受限。",
             ),
             "action_parameters": ConfigField(
                 type=list,
@@ -620,6 +688,10 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         }
         GenerateImageAction.action_enabled = bool(config.get("action_enabled", True))
         GenerateImageAction.active_preset = str(self.config.get("bizyair_generate_image_plugin", {}).get("active_preset", "default")).strip()
+        GenerateImageAction.nai_model = str(config.get("nai_model", "")).strip()
+        GenerateImageAction.nai_sfw_filter = bool(config.get("nai_sfw_filter", False))
+        GenerateImageAction.nai_artist = str(config.get("nai_artist", "")).strip()
+        GenerateImageAction.nai_size = str(config.get("nai_size", "auto")).strip() or "auto"
         permission_manager.configure(
             global_blacklist=permission_config.get("global_blacklist", DEFAULT_PERMISSION_USER_LIST),
             command_user_list=permission_config.get("command_user_list", DEFAULT_PERMISSION_USER_LIST),
@@ -631,4 +703,11 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         components.append((DrListCommand.get_command_info(), DrListCommand))
         components.append((DrUseCommand.get_command_info(), DrUseCommand))
         components.append((DrSwitchCommand.get_command_info(), DrSwitchCommand))
+        components.append((NaiSetCommand.get_command_info(), NaiSetCommand))
+        components.append((NaiModelsCommand.get_command_info(), NaiModelsCommand))
+        components.append((NaiNsfwCommand.get_command_info(), NaiNsfwCommand))
+        components.append((NaiArtCommand.get_command_info(), NaiArtCommand))
+        components.append((NaiSizeCommand.get_command_info(), NaiSizeCommand))
+        components.append((Nai0Command.get_command_info(), Nai0Command))
+        components.append((NaiRandomCommand.get_command_info(), NaiRandomCommand))
         return components
