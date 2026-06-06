@@ -172,8 +172,13 @@ class TestNaiConfigIntegration:
         assert d.mode == "llm"
         template = d.values[0]
         # 4 个注入占位符必须在场（被替换的就是这几个；拼错会导致 director 拿不到上下文/状态）
-        for ph in ("{image_intent}", "{today_state}", "{current_datetime}", "{recent_chat_context_30}"):
+        # 注意：意图由上游 nai_intent 提炼后注入，故 director 引用 {nai_intent} 而非原始 {image_intent}
+        for ph in ("{nai_intent}", "{today_state}", "{current_datetime}", "{recent_chat_context_30}"):
             assert ph in template, f"nai_director 模板缺少占位符 {ph}"
+        # nai_intent translater 变量存在，且它吃原始 image_intent
+        ni = registry.variable_definitions["nai_intent"]
+        assert ni.mode == "llm"
+        assert "{image_intent}" in ni.values[0]
         # 主体识别（支撑「画指定角色靠 director 自判」决策）：已知角色写 (作品)、不补外貌
         assert "(作品)" in template
         assert "主体识别" in template
