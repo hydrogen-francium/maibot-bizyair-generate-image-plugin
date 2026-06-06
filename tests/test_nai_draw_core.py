@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 from services.action_parameter_utils import build_action_parameters
 from services.nai_draw_core import (
     DrawPayload,
+    inject_nai_intent,
     inject_previous_context,
     inject_tag_candidates,
     record_previous_context,
@@ -511,6 +512,99 @@ class TestInjectTagCandidates:
         action_inputs = {"image_intent": "画猫娘"}
         await inject_tag_candidates(self._get_config(True), action_inputs)
         assert action_inputs["tag_candidates"] == ""
+
+    @pytest.mark.asyncio
+    async def test_query_prefers_nai_intent_over_image_intent(self, monkeypatch):
+        # 检索 query 优先用提炼后的 nai_intent，而非原始 image_intent
+        mock_resolve = AsyncMock(return_value="<tag_candidates>X</tag_candidates>")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "原始脏意图喵", "nai_intent": "提炼后的干净意图"}
+        await inject_tag_candidates(self._get_config(True), action_inputs)
+        assert mock_resolve.call_args.args[1] == "提炼后的干净意图"
+
+    @pytest.mark.asyncio
+    async def test_query_falls_back_to_image_intent_when_nai_intent_empty(self, monkeypatch):
+        # nai_intent 为空（translater 挂了）→ 回退原始 image_intent，检索照常
+        mock_resolve = AsyncMock(return_value="<tag_candidates>X</tag_candidates>")
+        monkeypatch.setattr(
+            "services.nai_tag_candidate_resolver.resolve_tag_candidates", mock_resolve
+        )
+        action_inputs = {"image_intent": "原始意图", "nai_intent": ""}
+        await inject_tag_candidates(self._get_config(True), action_inputs)
+        assert mock_resolve.call_args.args[1] == "原始意图"
+
+
+class TestInjectNaiIntent:
+    """inject_nai_intent（translater）单元测试：mock generate_variable_with_llm，零网络。
+
+    必定 set nai_intent；/nai0(nai_raw_tags 非空) 跳过；无模板/提炼失败回退原始 image_intent。
+    """
+
+    @staticmethod
+    def _get_config(template="模板 {image_intent} 上下文 {recent_chat_context_30}"):
+        cfg = {"intent_refine_template": template}
+        return lambda k, d=None: (cfg.get("intent_refine_template", d) if k == "nai_chat_client.intent_refine_template" else d)
+
+    @pytest.mark.asyncio
+    async def test_refines_and_injects(self, monkeypatch):
+        mock_llm = AsyncMock(return_value="花海佑芽，穿训练服")
+        monkeypatch.setattr("services.nai_draw_core.generate_variable_with_llm", mock_llm)
+        action_inputs = {"image_intent": "画个花海佑芽喵"}
+        await inject_nai_intent(self._get_config(), action_inputs, recent_chat_context="ctx", log_prefix="[t]")
+        assert action_inputs["nai_intent"] == "花海佑芽，穿训练服"
+        # 渲染后的 prompt 应含原始意图 + 上下文
+        sent_prompt = mock_llm.call_args.args[1]
+        assert "画个花海佑芽喵" in sent_prompt
+        assert "ctx" in sent_prompt
+
+    @pytest.mark.asyncio
+    async def test_skips_when_nai_raw_tags_present(self, monkeypatch):
+        # /nai0 直发：跳过提炼，不调 LLM
+        mock_llm = AsyncMock(return_value="SHOULD_NOT_BE_USED")
+        monkeypatch.setattr("services.nai_draw_core.generate_variable_with_llm", mock_llm)
+        action_inputs = {"image_intent": "画猫娘", "nai_raw_tags": "1girl, solo"}
+        await inject_nai_intent(self._get_config(), action_inputs)
+        assert action_inputs["nai_intent"] == ""
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_image_intent(self, monkeypatch):
+        mock_llm = AsyncMock(return_value="X")
+        monkeypatch.setattr("services.nai_draw_core.generate_variable_with_llm", mock_llm)
+        action_inputs = {"image_intent": "  "}
+        await inject_nai_intent(self._get_config(), action_inputs)
+        assert action_inputs["nai_intent"] == ""
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_template_falls_back_to_raw_intent(self, monkeypatch):
+        # 未配置 translater 模板 → 不提炼，回退原始 image_intent（director 不丢主体）
+        mock_llm = AsyncMock(return_value="X")
+        monkeypatch.setattr("services.nai_draw_core.generate_variable_with_llm", mock_llm)
+        action_inputs = {"image_intent": "原始意图"}
+        await inject_nai_intent(self._get_config(template=""), action_inputs)
+        assert action_inputs["nai_intent"] == "原始意图"
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failsafe_falls_back_to_raw_intent(self, monkeypatch):
+        # 提炼抛异常 → 回退原始 image_intent，绝不阻断
+        mock_llm = AsyncMock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr("services.nai_draw_core.generate_variable_with_llm", mock_llm)
+        action_inputs = {"image_intent": "原始意图"}
+        await inject_nai_intent(self._get_config(), action_inputs)
+        assert action_inputs["nai_intent"] == "原始意图"
+
+    @pytest.mark.asyncio
+    async def test_empty_refine_falls_back_to_raw_intent(self, monkeypatch):
+        # 提炼出空串 → 回退原始意图，不让 director 丢主体
+        mock_llm = AsyncMock(return_value="   ")
+        monkeypatch.setattr("services.nai_draw_core.generate_variable_with_llm", mock_llm)
+        action_inputs = {"image_intent": "原始意图"}
+        await inject_nai_intent(self._get_config(), action_inputs)
+        assert action_inputs["nai_intent"] == "原始意图"
 
 
 class TestInjectPreviousContext:

@@ -144,6 +144,51 @@ def inject_nai_runtime_inputs(
     )
 
 
+async def inject_nai_intent(
+        get_config: ConfigGetter,
+        action_inputs: dict[str, Any],
+        *,
+        recent_chat_context: str = "",
+        log_prefix: str = "",
+) -> None:
+    """意图提炼器（translater）：用 image_intent + 聊天上下文调 LLM，把叙事/口癖/动机剥离成纯画面描述，
+    伪注入 action_inputs["nai_intent"]（原地修改）。
+
+    必须在 inject_tag_candidates / 依赖解析**之前**调用：提炼结果既当 tag 检索 query、又供 nai_director
+    模板的 {nai_intent}。模板取自 [nai_chat_client].intent_refine_template（配置可调）。
+
+    仿 inject_tag_candidates：nai_intent 是已解析字面量（无占位符），解析器把无依赖 action_input 直接灌进
+    resolved_context，nai_director 引用 {nai_intent} 即生效，无需登记进 action_parameter_names。
+
+    **必定**设置 action_inputs["nai_intent"]（哪怕空串）：模板引用了它，缺 key 会被判「未定义变量」。
+    失败安全：/nai0 直发 → 空串（director 旁路）；无模板 / 提炼失败 → **回退原始 image_intent**
+    （director 至少拿到原始意图，不至于丢主体），绝不阻断出图。
+    """
+    image_intent = str(action_inputs.get("image_intent") or "").strip()
+    action_inputs["nai_intent"] = ""
+    try:
+        # /nai0 直发（nai_raw_tags 非空）时 nai_director 旁路 → 提炼同样旁路（避免无谓 LLM 调用）
+        if str(action_inputs.get("nai_raw_tags") or "").strip():
+            return
+        if not image_intent:
+            return
+        template = str(get_config("nai_chat_client.intent_refine_template", "") or "").strip()
+        if not template:
+            # 未配置 translater 模板 → 不提炼，director 回退吃原始意图
+            action_inputs["nai_intent"] = image_intent
+            return
+        prompt = template.replace("{image_intent}", image_intent).replace(
+            "{recent_chat_context_30}", str(recent_chat_context or "")
+        )
+        refined = (await generate_variable_with_llm(get_config, prompt, log_prefix=log_prefix) or "").strip()
+        # 提炼出空（极端情况）也回退原始意图，绝不让 director 丢主体
+        action_inputs["nai_intent"] = refined or image_intent
+        logger.info(f"{log_prefix} 注入 nai_intent(提炼意图): {short_repr(action_inputs['nai_intent'])}")
+    except Exception as exc:  # 失败安全：提炼任何环节异常都回退原始意图，绝不阻断出图
+        logger.warning(f"{log_prefix} nai_intent 提炼失败，回退原始意图: {exc}")
+        action_inputs["nai_intent"] = image_intent
+
+
 async def inject_tag_candidates(
         get_config: ConfigGetter,
         action_inputs: dict[str, Any],
@@ -167,7 +212,8 @@ async def inject_tag_candidates(
         # /nai0 直发（nai_raw_tags 非空）时 nai_director 旁路 → 检索同样旁路（与 director 惰性旁路一致，避免无谓触网）
         if str(action_inputs.get("nai_raw_tags") or "").strip():
             return
-        query = str(action_inputs.get("image_intent") or "").strip()
+        # query 优先用提炼后的 nai_intent（干净意图，检索更准），回退原始 image_intent（translater 挂了也能检索）
+        query = str(action_inputs.get("nai_intent") or "").strip() or str(action_inputs.get("image_intent") or "").strip()
         retriever_config = get_config("tag_retriever", {}) or {}
         if not query or not isinstance(retriever_config, dict) or not retriever_config.get("enabled", False):
             return
@@ -459,10 +505,31 @@ async def resolve_to_payload(
     )
     provider = resolved_preset["provider"]
 
+    # builtin provider 提前构造：inject_nai_intent 要在依赖解析前取聊天上下文喂 translater，
+    # 这里取的值进缓存，后续依赖解析阶段（build_placeholder_values）复用同一实例不重复取。
+    builtin_variable_provider = BuiltinVariableProvider(
+        chat_id=chat_id,
+        filter_mai=False,
+        message_image_base64_provider=image_base64_provider or (lambda *a, **k: None),
+    )
+
     # NAI 运行时设置（画师串/尺寸）注入；仅 NAI 预设生效，GPT 路径不受影响
     if provider == "nai_chat":
         inject_nai_runtime_inputs(action_inputs, nai_artist=nai_artist, nai_size=nai_size, log_prefix=log_prefix)
-        # P4：online tag 检索结果伪注入 {tag_candidates}（image_intent 空时自然跳过；失败安全降级）
+        # translater：提炼意图（剥离叙事/口癖），结果同时供下方检索 query 和 nai_director；
+        # 取最近聊天上下文喂 translater（/nai0 直发时下方会跳过提炼，这里取了也不浪费——有缓存）
+        _recent_ctx = ""
+        if not str(action_inputs.get("nai_raw_tags") or "").strip():
+            try:
+                _recent_ctx = str(
+                    builtin_variable_provider.build_placeholder_values({"recent_chat_context_30"}).get(
+                        "{recent_chat_context_30}", ""
+                    ) or ""
+                )
+            except Exception as exc:
+                logger.warning(f"{log_prefix} 取聊天上下文喂 translater 失败，按空处理: {exc}")
+        await inject_nai_intent(get_config, action_inputs, recent_chat_context=_recent_ctx, log_prefix=log_prefix)
+        # P4：online tag 检索结果伪注入 {tag_candidates}（query 用提炼后的 nai_intent；失败安全降级）
         await inject_tag_candidates(get_config, action_inputs, log_prefix=log_prefix)
         # continuity：读会话态上一轮 → 伪注入 {previous_prompt_context}（/nai0 旁路；失败安全降级）
         inject_previous_context(get_config, action_inputs, chat_id, log_prefix=log_prefix)
@@ -470,11 +537,6 @@ async def resolve_to_payload(
     all_bindings = get_parameter_bindings_config(get_config, provider)
     parameter_bindings_config = filter_parameter_bindings_by_preset(all_bindings, active_preset)
 
-    builtin_variable_provider = BuiltinVariableProvider(
-        chat_id=chat_id,
-        filter_mai=False,
-        message_image_base64_provider=image_base64_provider or (lambda *a, **k: None),
-    )
     registry = CustomVariableRegistry(
         raw_variables=get_config("custom_variables_config.custom_variables", []),
         action_parameter_names=set(action_parameters.keys()),

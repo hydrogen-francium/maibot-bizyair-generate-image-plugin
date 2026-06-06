@@ -165,20 +165,22 @@ class TestNaiConfigIntegration:
         assert name == presets[0]["name"]
         assert prompt == presets[0]["prompt"]
 
-    def test_nai_director_template_placeholders_and_role_logic(self, registry):
+    def test_nai_director_template_placeholders_and_role_logic(self, registry, config):
         # nai_director 模板（移植 prompt_rules）的回归锁：没有任何测试跑 director 路径，
         # 占位符若被改坏会静默失效，这里盯死关键不变量。
         d = registry.variable_definitions["nai_director"]
         assert d.mode == "llm"
         template = d.values[0]
         # 4 个注入占位符必须在场（被替换的就是这几个；拼错会导致 director 拿不到上下文/状态）
-        # 注意：意图由上游 nai_intent 提炼后注入，故 director 引用 {nai_intent} 而非原始 {image_intent}
+        # 注意：意图由上游 translater 提炼后以 action_input 注入，故 director 引用 {nai_intent} 而非原始 {image_intent}
         for ph in ("{nai_intent}", "{today_state}", "{current_datetime}", "{recent_chat_context_30}"):
             assert ph in template, f"nai_director 模板缺少占位符 {ph}"
-        # nai_intent translater 变量存在，且它吃原始 image_intent
-        ni = registry.variable_definitions["nai_intent"]
-        assert ni.mode == "llm"
-        assert "{image_intent}" in ni.values[0]
+        # nai_intent 不再是 custom variable（改由 inject_nai_intent 代码注入），故不应出现在变量定义里
+        assert "nai_intent" not in registry.variable_definitions
+        # translater 模板存在于 [nai_chat_client].intent_refine_template，且吃原始 image_intent + 聊天上下文
+        refine_tmpl = config["nai_chat_client"]["intent_refine_template"]
+        assert "{image_intent}" in refine_tmpl
+        assert "{recent_chat_context_30}" in refine_tmpl
         # 主体识别（支撑「画指定角色靠 director 自判」决策）：已知角色写 (作品)、不补外貌
         assert "(作品)" in template
         assert "主体识别" in template
