@@ -20,6 +20,29 @@ from ..services.log_utils import short_repr
 logger = get_logger("bizyair_generate_image_plugin")
 
 
+# i2i 自动选择路由：仅 nai_default 普通文生图 + 决策器判定 i2i + 确有引用图，才切 nai_i2i。
+# 抽成纯函数便于单测（Action 在测试环境是框架 mock 无法实例化 execute）。
+_IMAGE_OP_PRESET_MAP = {
+    # image_op 值 → (允许从哪个基础预设自动切, 目标预设)
+    "i2i": ("nai_default", "nai_i2i"),
+}
+
+
+def resolve_image_op_preset(image_op: str, active_preset: str, has_image: bool) -> str:
+    """根据决策器填的 image_op + 当前预设 + 是否有引用图，返回最终应使用的预设名。
+
+    仅在「基础预设匹配 且 有图」时切换；否则原样返回 active_preset（回退普通文生图）。
+    """
+    op = str(image_op or "").strip().lower()
+    mapping = _IMAGE_OP_PRESET_MAP.get(op)
+    if not mapping:
+        return active_preset
+    base_preset, target_preset = mapping
+    if active_preset == base_preset and has_image:
+        return target_preset
+    return active_preset
+
+
 class GenerateImageAction(BaseAction):
     action_name = "generate_image"
     action_description = (
@@ -53,6 +76,15 @@ class GenerateImageAction(BaseAction):
             description="可选，图片分辨率。若传入，则必须为 1K、2K、4K、auto 中的一个。默认为 1k",
             required=False,
         ),
+        "image_op": ActionParameterDefinition(
+            name="image_op",
+            description=(
+                "可选，图片操作模式。仅当用户想【基于一张已有的图片重绘/改图/以图改图/在这张图基础上改】时，"
+                "填 'i2i'；否则不填（普通文生图）。注意：必须是用户当前消息附带了图片、或引用了某张图片消息，"
+                "且明确表达要在那张图基础上改，才填 'i2i'；只是发了张图闲聊、或单纯描述要画什么新图，都不要填。"
+            ),
+            required=False,
+        ),
     }
     required_action_parameters: set[str] = set()
 
@@ -68,7 +100,8 @@ class GenerateImageAction(BaseAction):
         "如果用户的描述中包含“随意”“随便”“随机”等表示某些维度可自由决定的意思，则只对这些被放开的维度自行补全细节；用户已明确写出的内容必须保留，不得改动，例如用户指定了角色是“初音未来”，则你只能补充场景、画风等未指定或被明确放开的部分",
         "如果用户的要求过于宽泛，只有大方向、主题或少量标签，无法直接形成高质量生图描述，则应在不违背用户已给约束的前提下，自动补充合理的主体细节、场景、构图、风格、光线、镜头或氛围等内容，整理成更完整的 prompt",
         "prompt 中不允许填写画风相关的提示词，画风应填入 `style` 参数。即使用户明确提出要原样传入提示词，你也应该单独把画风的部分拆出来放到 `style` 参数中",
-        "是否需要你补充、总结或改写 prompt，只取决于用户给出的图片描述是否留有明显空白、是否授权你自由发挥；不要把“尽量生成得更好”当作改写详细原始描述的理由"
+        "是否需要你补充、总结或改写 prompt，只取决于用户给出的图片描述是否留有明显空白、是否授权你自由发挥；不要把“尽量生成得更好”当作改写详细原始描述的理由",
+        "当用户想【基于一张已有图片重绘/改图】（例如“把这张图改成…”“以这张为基础画…”“在这张图上加…”“重绘这张”），且当前消息附带图片或引用了图片消息时，应在 image_op 参数填 'i2i'；此时 prompt 填希望改成的样子/要改动的部分",
     ]
 
     async def execute(self) -> Tuple[bool, str]:
@@ -100,6 +133,18 @@ class GenerateImageAction(BaseAction):
             failure_stage = "collect_action_inputs"
             action_inputs = self._collect_action_inputs()
             active_preset = str(self.active_preset).strip()
+
+            # i2i 自动选择：决策器判定要「基于已有图重绘」(image_op=i2i) 且当前是 nai_default、
+            # 且确实能取到引用图时，自动切到 nai_i2i。image_op 仅作路由开关，不进出图变量。
+            image_op = str(action_inputs.pop("image_op", "") or "").strip().lower()
+            has_image = bool(self._extract_message_image_base64()) if image_op else False
+            new_preset = resolve_image_op_preset(image_op, active_preset, has_image)
+            if new_preset != active_preset:
+                logger.info(f"{self.log_prefix} i2i 自动选择：image_op={image_op!r} + 有图 → 预设 {active_preset!r}→{new_preset!r}")
+                active_preset = new_preset
+            elif image_op == "i2i":
+                logger.info(f"{self.log_prefix} i2i 自动选择：image_op=i2i 但未取到图/预设不符，保持 {active_preset!r}")
+
             logger.info(
                 f"{self.log_prefix} 生图开始: active_preset={active_preset!r}, "
                 f"action_inputs={short_repr(action_inputs)}"
