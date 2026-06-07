@@ -8,6 +8,7 @@
 移植自 nai_draw_plugin core/services/danbooru_online_retriever.py（改 client import 路径 + logger）。
 """
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from src.common.logger import get_logger
@@ -30,6 +31,8 @@ class DanbooruOnlineRetriever:
         related_seed_count: int = 8,
         show_nsfw: bool = False,
         popularity_weight: float = 0.15,
+        search_max_retries: int = 3,
+        search_retry_delay: float = 2.0,
     ):
         """
         Args:
@@ -41,6 +44,8 @@ class DanbooruOnlineRetriever:
             related_seed_count: 用多少个 search 结果作为 related 的种子
             show_nsfw: 是否包含 NSFW 标签
             popularity_weight: 标签热度权重
+            search_max_retries: search 网络故障（返回 None）时的最大尝试次数（含首次）
+            search_retry_delay: search 重试退避基数秒（第 N 次等待 delay*N）
         """
         self.client = DanbooruOnlineClient(base_url=base_url, timeout=timeout)
         self.search_limit = search_limit
@@ -49,6 +54,8 @@ class DanbooruOnlineRetriever:
         self.related_seed_count = related_seed_count
         self.show_nsfw = show_nsfw
         self.popularity_weight = popularity_weight
+        self._search_max_retries = max(1, int(search_max_retries or 1))
+        self._search_retry_delay = max(0.0, float(search_retry_delay or 0.0))
 
     def update_runtime_config(self, **kwargs) -> None:
         """更新运行时参数"""
@@ -56,6 +63,10 @@ class DanbooruOnlineRetriever:
                     "related_seed_count", "show_nsfw", "popularity_weight"):
             if key in kwargs:
                 setattr(self, key, kwargs[key])
+        if "search_max_retries" in kwargs:
+            self._search_max_retries = max(1, int(kwargs["search_max_retries"] or 1))
+        if "search_retry_delay" in kwargs:
+            self._search_retry_delay = max(0.0, float(kwargs["search_retry_delay"] or 0.0))
 
     async def health_check(self) -> bool:
         """探活远程服务"""
@@ -84,18 +95,34 @@ class DanbooruOnlineRetriever:
         if not query or not query.strip():
             return empty_result
 
-        # 第一步：语义检索
-        search_resp = await self.client.search(
-            query=query,
-            top_k=self.search_top_k,
-            limit=self.search_limit,
-            popularity_weight=self.popularity_weight,
-            show_nsfw=self.show_nsfw,
-            use_segmentation=True,
-        )
+        # 第一步：语义检索。区分两类「无结果」：
+        #   client.search 返回 None = 网络故障（超时/连接失败/HF 冷启动）→ 重试有用，退避重试
+        #   返回 dict 但 results 空 = API 正常响应但真没搜到 → 重试无用，直接空结果
+        search_resp = None
+        for attempt in range(1, self._search_max_retries + 1):
+            search_resp = await self.client.search(
+                query=query,
+                top_k=self.search_top_k,
+                limit=self.search_limit,
+                popularity_weight=self.popularity_weight,
+                show_nsfw=self.show_nsfw,
+                use_segmentation=True,
+            )
+            if search_resp is not None:
+                break  # 拿到响应（哪怕 results 空）就不再重试——空是 API 真没搜到，重试也白搭
+            if attempt < self._search_max_retries:
+                wait = self._search_retry_delay * attempt
+                logger.warning(
+                    f"DanbooruOnline search 网络故障（第 {attempt}/{self._search_max_retries} 次，返回 None），"
+                    f"{wait:.1f}s 后重试，query='{query[:30]}'"
+                )
+                await asyncio.sleep(wait)
 
-        if not search_resp or not search_resp.get("results"):
-            logger.warning(f"DanbooruOnline search 无结果，query='{query[:30]}'")
+        if search_resp is None:
+            logger.warning(f"DanbooruOnline search 重试 {self._search_max_retries} 次仍网络故障，已跳过，query='{query[:30]}'")
+            return empty_result
+        if not search_resp.get("results"):
+            logger.info(f"DanbooruOnline search API 正常但无匹配结果（不重试），query='{query[:30]}'")
             return empty_result
 
         search_results = [
@@ -213,6 +240,8 @@ def get_online_retriever(
     related_seed_count: int = 8,
     show_nsfw: bool = False,
     popularity_weight: float = 0.15,
+    search_max_retries: int = 3,
+    search_retry_delay: float = 2.0,
 ) -> Optional[DanbooruOnlineRetriever]:
     """获取在线检索器单例"""
     global _online_instance
@@ -229,6 +258,8 @@ def get_online_retriever(
             related_seed_count=related_seed_count,
             show_nsfw=show_nsfw,
             popularity_weight=popularity_weight,
+            search_max_retries=search_max_retries,
+            search_retry_delay=search_retry_delay,
         )
     else:
         _online_instance.update_runtime_config(
@@ -238,5 +269,7 @@ def get_online_retriever(
             related_seed_count=related_seed_count,
             show_nsfw=show_nsfw,
             popularity_weight=popularity_weight,
+            search_max_retries=search_max_retries,
+            search_retry_delay=search_retry_delay,
         )
     return _online_instance

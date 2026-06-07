@@ -175,3 +175,71 @@ class TestSingleton:
         assert r1 is r2
         assert r2.search_limit == 99  # update_runtime_config 生效
         reset_online_retriever()
+
+
+class _SeqClient:
+    """假 client：search 按预设序列依次返回（模拟前几次网络故障 None、之后恢复）。"""
+
+    def __init__(self, search_seq, related_resp=None):
+        self._search_seq = list(search_seq)
+        self._related_resp = related_resp if related_resp is not None else []
+        self.search_calls = 0
+
+    async def search(self, query, **kwargs):
+        i = min(self.search_calls, len(self._search_seq) - 1)
+        self.search_calls += 1
+        return self._search_seq[i]
+
+    async def related(self, tags, **kwargs):
+        return self._related_resp
+
+
+class TestSearchRetry:
+    """search 重试：仅对网络故障（返回 None）重试，API 正常但 results 空不重试。"""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        # 重试退避不真等
+        async def _fast(*a, **k):
+            return None
+        monkeypatch.setattr("services.nai_danbooru_online_retriever.asyncio.sleep", _fast)
+
+    @pytest.mark.asyncio
+    async def test_retries_on_none_then_succeeds(self):
+        # 前两次 None（网络故障）→ 第三次成功
+        r = DanbooruOnlineRetriever(search_max_retries=3, search_retry_delay=0.0)
+        r.client = _SeqClient(search_seq=[
+            None,
+            None,
+            {"results": [{"tag": "cat_girl", "final_score": 0.9}]},
+        ])
+        out = await r.retrieve("画猫娘")
+        assert r.client.search_calls == 3            # 重试到第三次
+        assert [x["tag"] for x in out["search"]] == ["cat_girl"]
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_max_retries_all_none(self):
+        # 全 None → 重试到上限仍失败 → 空结果
+        r = DanbooruOnlineRetriever(search_max_retries=3, search_retry_delay=0.0)
+        r.client = _SeqClient(search_seq=[None])
+        out = await r.retrieve("画猫娘")
+        assert r.client.search_calls == 3            # 用满 3 次
+        assert out == {"search": [], "related": []}
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_results_empty(self):
+        # API 正常响应但 results 空（真没搜到）→ 不重试，直接空结果
+        r = DanbooruOnlineRetriever(search_max_retries=3, search_retry_delay=0.0)
+        r.client = _SeqClient(search_seq=[{"results": []}])
+        out = await r.retrieve("冷门概念")
+        assert r.client.search_calls == 1            # 只调一次，不重试
+        assert out == {"search": [], "related": []}
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_first_call_succeeds(self):
+        r = DanbooruOnlineRetriever(search_max_retries=3, search_retry_delay=0.0)
+        r.client = _SeqClient(search_seq=[{"results": [{"tag": "x", "final_score": 0.5}]}])
+        out = await r.retrieve("x")
+        assert r.client.search_calls == 1
+        assert [t["tag"] for t in out["search"]] == ["x"]
+

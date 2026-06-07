@@ -713,6 +713,10 @@ related_limit = 15
 related_seed_count = 8
 show_nsfw = true
 popularity_weight = 0.15
+# search 网络故障（超时/连接失败/HF Space 冷启动，client 返回 None）时的重试：仅对「网络故障」重试，
+# API 正常响应但无匹配（results 空）不重试（重试也白搭）。search_max_retries 含首次；retry_delay 为退避基数秒（第 N 次等 delay*N）。
+search_max_retries = 3
+search_retry_delay = 2.0
 
 # ============================================================
 # 会话态 continuity：把上一轮 nai_director 生成的 tag 串（+上一轮意图）渲染成

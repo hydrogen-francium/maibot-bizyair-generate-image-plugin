@@ -58,6 +58,8 @@ async def resolve_tag_candidates(
             related_seed_count=retriever_config.get("related_seed_count", 8),
             show_nsfw=retriever_config.get("show_nsfw", True),
             popularity_weight=retriever_config.get("popularity_weight", 0.15),
+            search_max_retries=retriever_config.get("search_max_retries", 3),
+            search_retry_delay=retriever_config.get("search_retry_delay", 2.0),
         )
         if not retriever:
             return ""
