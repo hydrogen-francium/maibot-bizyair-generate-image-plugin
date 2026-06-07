@@ -13,6 +13,7 @@ from src.plugin_system.base.component_types import ActionActivationType
 
 from ..services import nai_action_guard
 from ..services import nai_draw_core
+from ..services import nai_recent_image
 from ..services import permission_manager
 from ..services.action_parameter_utils import ActionParameterDefinition
 from ..services.log_utils import short_repr
@@ -20,27 +21,31 @@ from ..services.log_utils import short_repr
 logger = get_logger("bizyair_generate_image_plugin")
 
 
-# i2i 自动选择路由：仅 nai_default 普通文生图 + 决策器判定 i2i + 确有引用图，才切 nai_i2i。
-# 抽成纯函数便于单测（Action 在测试环境是框架 mock 无法实例化 execute）。
-_IMAGE_OP_PRESET_MAP = {
-    # image_op 值 → (允许从哪个基础预设自动切, 目标预设)
-    "i2i": ("nai_default", "nai_i2i"),
-}
+# i2i 自动选择路由（仅 nai_default 基础预设上生效，不覆盖手动 vibe/charref/GPT）。
+# 两条触发路径（抽纯函数便于单测，Action 在测试环境是框架 mock 无法实例化 execute）：
+#   路径1 引用图硬触发：本次消息引用/附带了图 → 必定 i2i 用那张（绕过大脑 image_op）
+#   路径2 大脑主动：无引用图但大脑填 image_op=i2i → 用「群里最近的图」
+def resolve_i2i_choice(
+    active_preset: str,
+    image_op: str,
+    has_quoted_image: bool,
+    has_recent_image: bool,
+) -> tuple[str, Optional[str]]:
+    """决定最终预设 + i2i 用哪个图源。
 
-
-def resolve_image_op_preset(image_op: str, active_preset: str, has_image: bool) -> str:
-    """根据决策器填的 image_op + 当前预设 + 是否有引用图，返回最终应使用的预设名。
-
-    仅在「基础预设匹配 且 有图」时切换；否则原样返回 active_preset（回退普通文生图）。
+    返回 (preset, image_source)：image_source ∈ {"quoted","recent",None}。
+    仅 active_preset == "nai_default" 时可能切到 nai_i2i；否则原样保持、不取图。
     """
-    op = str(image_op or "").strip().lower()
-    mapping = _IMAGE_OP_PRESET_MAP.get(op)
-    if not mapping:
-        return active_preset
-    base_preset, target_preset = mapping
-    if active_preset == base_preset and has_image:
-        return target_preset
-    return active_preset
+    if active_preset != "nai_default":
+        return active_preset, None
+    # 路径1：引用图硬触发，优先级最高，不看 image_op
+    if has_quoted_image:
+        return "nai_i2i", "quoted"
+    # 路径2：大脑主动起意 + 群里有最近图
+    if str(image_op or "").strip().lower() == "i2i" and has_recent_image:
+        return "nai_i2i", "recent"
+    # 都不满足 → 普通文生图
+    return active_preset, None
 
 
 class GenerateImageAction(BaseAction):
@@ -79,9 +84,9 @@ class GenerateImageAction(BaseAction):
         "image_op": ActionParameterDefinition(
             name="image_op",
             description=(
-                "可选，图片操作模式。仅当用户想【基于一张已有的图片重绘/改图/以图改图/在这张图基础上改】时，"
-                "填 'i2i'；否则不填（普通文生图）。注意：必须是用户当前消息附带了图片、或引用了某张图片消息，"
-                "且明确表达要在那张图基础上改，才填 'i2i'；只是发了张图闲聊、或单纯描述要画什么新图，都不要填。"
+                "可选，图片操作模式。当【你想主动拿群里最近的一张已有图片来改 / 二创 / 在它基础上画新东西】时，"
+                "填 'i2i'；普通凭空作画不填。注意：如果当前消息本身就引用/附带了图片，系统会自动以那张图做 i2i，"
+                "你无需填此参数；这个参数只用于【你主动想改群里最近那张图、但本条消息没有直接引用它】的情况。"
             ),
             required=False,
         ),
@@ -101,7 +106,7 @@ class GenerateImageAction(BaseAction):
         "如果用户的要求过于宽泛，只有大方向、主题或少量标签，无法直接形成高质量生图描述，则应在不违背用户已给约束的前提下，自动补充合理的主体细节、场景、构图、风格、光线、镜头或氛围等内容，整理成更完整的 prompt",
         "prompt 中不允许填写画风相关的提示词，画风应填入 `style` 参数。即使用户明确提出要原样传入提示词，你也应该单独把画风的部分拆出来放到 `style` 参数中",
         "是否需要你补充、总结或改写 prompt，只取决于用户给出的图片描述是否留有明显空白、是否授权你自由发挥；不要把“尽量生成得更好”当作改写详细原始描述的理由",
-        "当用户想【基于一张已有图片重绘/改图】（例如“把这张图改成…”“以这张为基础画…”“在这张图上加…”“重绘这张”），且当前消息附带图片或引用了图片消息时，应在 image_op 参数填 'i2i'；此时 prompt 填希望改成的样子/要改动的部分",
+        "当你想主动拿群里最近的一张图来改/二创/在它基础上画（而不是凭空画新图），且本条消息没有直接引用那张图时，在 image_op 填 'i2i'，prompt 填你想把它改成的样子；若本条消息已引用/附带图片则无需填，系统会自动据此改图",
     ]
 
     async def execute(self) -> Tuple[bool, str]:
@@ -134,16 +139,33 @@ class GenerateImageAction(BaseAction):
             action_inputs = self._collect_action_inputs()
             active_preset = str(self.active_preset).strip()
 
-            # i2i 自动选择：决策器判定要「基于已有图重绘」(image_op=i2i) 且当前是 nai_default、
-            # 且确实能取到引用图时，自动切到 nai_i2i。image_op 仅作路由开关，不进出图变量。
+            # i2i 自动选择（仅 nai_default 上生效）。两路径：
+            #   路径1 引用图硬触发：本次消息引用/附带图 → 必定 i2i 用那张（绕过大脑 image_op）
+            #   路径2 大脑主动：无引用图但大脑填 image_op=i2i → 抓「群里最近的图」
+            # image_op 仅作路由开关，pop 掉不进出图变量解析。
             image_op = str(action_inputs.pop("image_op", "") or "").strip().lower()
-            has_image = bool(self._extract_message_image_base64()) if image_op else False
-            new_preset = resolve_image_op_preset(image_op, active_preset, has_image)
+            quoted_image = self._extract_message_image_base64()
+            recent_image = None
+            if active_preset == "nai_default" and not quoted_image and image_op == "i2i":
+                recent_image = nai_recent_image.get_recent_chat_image_base64(self.chat_id)
+
+            new_preset, image_source = resolve_i2i_choice(
+                active_preset, image_op,
+                has_quoted_image=bool(quoted_image),
+                has_recent_image=bool(recent_image),
+            )
+            # 图源决定传给 core 的取图函数：recent→直接给抓来的最近图；其它→现有「当前消息引用图」链
+            image_provider = self._extract_message_image_base64
+            if image_source == "recent" and recent_image:
+                image_provider = lambda *a, **k: recent_image  # noqa: E731
             if new_preset != active_preset:
-                logger.info(f"{self.log_prefix} i2i 自动选择：image_op={image_op!r} + 有图 → 预设 {active_preset!r}→{new_preset!r}")
+                logger.info(
+                    f"{self.log_prefix} i2i 自动选择：{active_preset!r}→{new_preset!r}（图源={image_source}, "
+                    f"image_op={image_op!r}, 引用图={bool(quoted_image)}, 最近图={bool(recent_image)}）"
+                )
                 active_preset = new_preset
             elif image_op == "i2i":
-                logger.info(f"{self.log_prefix} i2i 自动选择：image_op=i2i 但未取到图/预设不符，保持 {active_preset!r}")
+                logger.info(f"{self.log_prefix} i2i 自动选择：image_op=i2i 但无可用图/预设不符，保持 {active_preset!r}")
 
             logger.info(
                 f"{self.log_prefix} 生图开始: active_preset={active_preset!r}, "
@@ -158,7 +180,7 @@ class GenerateImageAction(BaseAction):
                 action_parameters=self.action_parameters,
                 required_action_parameters=set(self.required_action_parameters),
                 chat_id=self.chat_id,
-                image_base64_provider=self._extract_message_image_base64,
+                image_base64_provider=image_provider,
                 nai_artist=self.nai_artist,
                 nai_size=self.nai_size,
                 nai_model=self.nai_model,
