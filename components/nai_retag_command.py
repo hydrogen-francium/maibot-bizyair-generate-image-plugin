@@ -81,7 +81,11 @@ def extract_image_base64_from_message(message: Any) -> Optional[str]:
 
 
 def build_failed_message(detail: Optional[str], wd14_enabled: bool) -> str:
-    """把 ReverseResult.detail 翻成给用户的友好提示（failed 三分支）。"""
+    """把 ReverseResult.detail 翻成给用户的友好提示。
+
+    注意区分「WD14 服务级失败（Space 全挂/网络）」与「真没识别到」——前者不是图的问题，
+    不能误导成「这张图可能不是 AI 生成」（WD14 本就是用来反推任意图含非 AI 图的）。
+    """
     base = "没能反推出这张图的提示词。"
     hint = "这张图可能不是 AI 生成，或没有可读的元数据。"
     d = str(detail or "")
@@ -94,7 +98,13 @@ def build_failed_message(detail: Optional[str], wd14_enabled: bool) -> str:
             f"{hint}"
         )
     if "超时" in d:
-        return f"{base}WD14 在线识别超时了，稍后再试或换一张图。\n{hint}"
+        return f"{base}WD14 在线识别服务超时了（HF Space 冷启动较慢），稍后再试。"
+    # WD14 服务级失败：Space 全连不上 / 调用异常 —— 是在线服务的问题，不是图的问题，别误导
+    if ("所有 Spaces" in d) or ("无法使用" in d) or d.startswith("WD14 异常") or d.startswith("WD14:"):
+        return f"{base}WD14 在线识别服务暂时不可用（免费 Space 可能挂了或在冷启动），稍后再试。"
+    if "未识别到任何标签" in d:
+        return f"{base}WD14 没能从这张图识别出有效内容，换张更清晰/主体明确的图再试。"
+    # 真正的「无元数据且未走到 WD14」等其它情况，才提示可能非 AI 生成
     return f"{base}{hint}"
 
 

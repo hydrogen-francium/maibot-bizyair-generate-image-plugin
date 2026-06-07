@@ -98,8 +98,27 @@ class TestFailedMessage:
         msg = build_failed_message("WD14 调用超时", wd14_enabled=True)
         assert "超时" in msg
 
-    def test_generic_failure(self):
+    def test_service_unavailable_not_misleading(self):
+        # WD14 服务级失败（Space 全挂）：不能误导成「这张图可能不是 AI 生成」
+        msg = build_failed_message("WD14: 所有 Spaces 都无法使用: timeout", wd14_enabled=True)
+        assert "服务暂时不可用" in msg
+        assert "AI 生成" not in msg  # 关键：不再误导是图的问题
+
+    def test_wd14_exception_not_misleading(self):
+        msg = build_failed_message("WD14 异常: connection refused", wd14_enabled=True)
+        assert "服务暂时不可用" in msg
+        assert "AI 生成" not in msg
+
+    def test_no_tags_recognized(self):
+        # WD14 跑通但没识别到 → 提示换图，不说「不是 AI 生成」
         msg = build_failed_message("WD14 未识别到任何标签", wd14_enabled=True)
         assert "没能反推" in msg
-        # 兜底提示这张图可能不是 AI 生成
+        assert "没能从这张图识别出有效内容" in msg
+        assert "AI 生成" not in msg
+
+    def test_truly_generic_still_hints_non_ai(self):
+        # 其它未知 detail 才保留「可能非 AI 生成」兜底
+        msg = build_failed_message("image_bytes 为空", wd14_enabled=True)
+        assert "没能反推" in msg
         assert "AI 生成" in msg
+
