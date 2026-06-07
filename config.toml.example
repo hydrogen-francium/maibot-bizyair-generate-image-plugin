@@ -743,4 +743,8 @@ wd14_enabled = true
 wd14_threshold = 0.35
 wd14_character_threshold = 0.8
 wd14_timeout = 60
+# WD14 连 huggingface.co 的可选代理（如 http://127.0.0.1:7890）；国内网络多半需要。留空=直连。
 wd14_proxy = ""
+# 当代理/网关对 huggingface.co 做 SSL 中间人导致证书校验失败时设 true 绕过校验（仅影响 WD14 连 HF）。
+# 网络环境干净时保持 false。
+wd14_insecure_ssl = false

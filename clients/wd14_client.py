@@ -91,6 +91,7 @@ class WD14Client:
         retry_delay: float = 3.0,
         spaces_config: Optional[List[Dict[str, str]]] = None,
         proxy: Optional[str] = None,
+        insecure_ssl: bool = False,
     ) -> None:
         self.model = model if model in self.AVAILABLE_MODELS else self.AVAILABLE_MODELS[0]
         normalized_timeout = float(timeout or self.SAFE_SPACE_TIMEOUT_CAP)
@@ -124,6 +125,44 @@ class WD14Client:
 
         if WD14Client._space_lock is None:
             WD14Client._space_lock = threading.Lock()
+
+        # gradio_client 连 HF 走的是 huggingface_hub 的 requests session。国内网络常因
+        # 「连不上 huggingface.co」或「代理做 SSL 中间人导致证书校验失败」而全 Space 失败。
+        # 用 hf 官方钩子 configure_http_backend 定点设这条 session 的 proxy + verify，
+        # 只影响 hf_hub、不污染插件其它 requests（tag 检索走独立 httpx，不受影响）。
+        self._insecure_ssl = bool(insecure_ssl)
+        if self._gradio_available and (self.proxy or self._insecure_ssl):
+            self._configure_hf_backend()
+
+    def _configure_hf_backend(self) -> None:
+        """定点配置 huggingface_hub 的 requests session（代理 + 可选关 SSL 校验）。失败不阻断。"""
+        try:
+            import requests
+            from huggingface_hub import configure_http_backend
+
+            proxy = self.proxy
+            insecure = self._insecure_ssl
+
+            def _backend_factory() -> "requests.Session":
+                session = requests.Session()
+                if proxy:
+                    session.proxies = {"http": proxy, "https": proxy}
+                if insecure:
+                    session.verify = False  # 绕过代理/网关的 SSL 中间人证书
+                return session
+
+            configure_http_backend(backend_factory=_backend_factory)
+            if insecure:
+                try:
+                    import urllib3
+                    urllib3.disable_warnings()  # 关掉 InsecureRequestWarning 刷屏
+                except Exception:
+                    pass
+            self.logger.info(
+                f"WD14 已配置 HF 连接后端: proxy={proxy or '无'}, verify_ssl={not insecure}"
+            )
+        except Exception as exc:
+            self.logger.warning(f"WD14 配置 HF 连接后端失败（按默认走）: {exc}")
 
     def _build_httpx_kwargs(self) -> Dict[str, Any]:
         """组装传给 gradio_client.Client 的 httpx 参数，按需带上代理。

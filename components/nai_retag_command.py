@@ -182,6 +182,7 @@ class NaiRetagCommand(BaseCommand):
                     timeout=float(retag_cfg.get("wd14_timeout", 60) or 60),
                     proxy=str(retag_cfg.get("wd14_proxy", "") or ""),
                     spaces_config=spaces,
+                    insecure_ssl=bool(retag_cfg.get("wd14_insecure_ssl", False)),
                 )
             except Exception as exc:
                 logger.warning(f"[nai_retag] WD14 客户端构造失败，仅用元数据反推: {exc}")
