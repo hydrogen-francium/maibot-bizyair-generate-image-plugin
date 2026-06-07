@@ -103,7 +103,11 @@ class NaiRetagCommand(BaseCommand):
 
     command_name = "nai_retag"
     command_description = "把图片反推成 Danbooru tag（先读 PNG 元数据，未命中走 WD14 在线兜底）"
-    command_pattern = r"^/nai\s+反推$"
+    # 注意：框架用 message.processed_plain_text 做命令匹配（src/chat/message_receive/bot.py），
+    # 带图/引用图时该文本会被图占位符（如 [回复…的消息：…]、[picid:…]、[图片]）污染、且占位符常排在命令词前，
+    # 故不能用 ^/nai\s+反推$ 严格锚定首尾（带图必匹配失败、命令不触发）。
+    # 这里放宽：允许命令词前后有图占位符等内容，但「反推」后须接 空白/方括号/行尾，防 /nai 反推xxx 粘连误匹配。
+    command_pattern = r"^.*?/nai\s+反推(?:\s|\[|$)"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         deny = _deny_if_no_permission(self)
