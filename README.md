@@ -187,13 +187,14 @@ NAI 预设走一条**独立的单次大脑** `nai_director`（移植 nai_draw �
 
 | 变量 | 作用 |
 | --- | --- |
-| `nai_director` | NAI 专属大脑（llm），消费 `{image_intent}` / `{today_state}` / `{current_datetime}` / `{recent_chat_context_30}`，输出 Danbooru tag 串 |
+| `nai_intent` | 意图提炼器（translater，llm）：把决策器原始中文意图里的叙事 / 动机 / 钠的口癖自夸剥离，只留纯画面要素（主体 / 动作 / 服装 / 场景 / 构图），结果同时喂 tag 检索 query 和 `nai_director`。出图前由代码注入（早于依赖解析，模板在 `[nai_chat_client].intent_refine_template`），失败 / 无模板回退原始意图 |
+| `nai_director` | NAI 专属大脑（llm），消费**提炼后的** `{nai_intent}` + `{today_state}` / `{current_datetime}` / `{recent_chat_context_30}` / `{tag_candidates}`（检索候选）/ `{previous_prompt_context}`（上一轮续承），输出 Danbooru tag 串 |
 | `nai_subject` | 主体来源：`/nai0` 注入 `nai_raw_tags` 时直接用（旁路 director），否则走 `nai_director` |
 | `nai_quality` | NAI 质量词，排在最前 |
 | `nai_negative` | NAI 负面词（映射到 `negative_prompt`） |
 | `nai_final_prompt` | 组装顺序 `质量词 →（画师串）→ 主体`，映射到 `prompt` |
 
-这些变量**只被 NAI 预设引用**，不影响共享的 `final_prompt`（BizyAir 预设继续直接用 `final_prompt`）。「画指定角色」（画别的二次元角色 / 风景时跳过钠人设）由 `nai_director` 模板的「主体识别」段自判，不需要显式开关。
+这些变量**只被 NAI 预设引用**，不影响共享的 `final_prompt`（BizyAir 预设继续直接用 `final_prompt`）。「画指定角色」（画别的二次元角色 / 风景时跳过钠人设）由 `nai_director` 模板的「主体识别」段自判，已知角色优先照抄 `{tag_candidates}` 的 `[Character]` 候选、不脑补括号作品名，不需要显式开关。
 
 ### 画师串与尺寸：运行时命令切换（不在 config 里手填）
 
@@ -216,7 +217,9 @@ NovelAI 网关要求 `prompt` / `negative_prompt` 必须是英文，含任何中
 
 独立 i2i 预设（如 `nai_i2i`）：`/dr use nai_i2i` 切过去，引用一张图（或随出图消息附带）即按它重绘；切回 `nai_default` 即纯文生图。预设里 `i2i_strength`（默认 0.7，重绘强度 0.01–0.99）/ `i2i_noise`（默认 0.0，0–0.99）这两个键的存在本身就是 i2i 标记。
 
-NewAPI 要求 `i2i.image` 宽高必须**严格等于**外层 `size`，而本仓无 Pillow 不能缩放图——所以 i2i 通路改为**读图真实尺寸（纯 `struct` 解 PNG/JPEG/WebP 头）覆盖外层 `size`**。代价：参考图必须是 NAI 标准尺寸（宽高 64 整除且不超 竖 832×1216 / 横 1216×832 / 方 1024×1024），否则**友好拒绝**（不静默踩上游 400，也不静默回退）。最稳用法是**对 NAI 之前生成的图迭代重绘**。图以 base64 直接进 `content_json`（MB 级），全程不进 director / 任何文本 LLM，相关日志一律短 repr（base64 铁律）。i2i 只覆盖 `size`、加 `i2i` 字段，不碰 prompt，与多人 `characters[]` 通道正交可共存。
+**i2i 自动选择（无需手动 `/dr use`）**：动作主体是 bot，出图 Action 会自动判断要不要走 i2i，两条路径——① **引用图硬触发**：本次出图消息引用 / 附带了图，必定 i2i 用那张；② **大脑主动**：没引用图、但决策器在 `image_op` 填了 `i2i`（bot 主动想拿群里某张图改 / 二创），则抓**群里最近一张图**（复用框架已存的入站图，逆序找最近含图消息、排除表情包）。两种都取不到图就回退普通文生图。仅当当前是 `nai_default` 时自动切到 `nai_i2i`，不覆盖手动选的 vibe / charref / GPT 预设。
+
+NewAPI 要求 `i2i.image` 宽高必须**严格等于**外层 `size`，而本仓无 Pillow 不能缩放图——所以 i2i 通路改为**读图真实尺寸（纯 `struct` 解 PNG/JPEG/WebP 头）覆盖外层 `size`**。代价：参考图必须是 NAI 标准尺寸（宽高 64 整除且不超 竖 832×1216 / 横 1216×832 / 方 1024×1024），否则**友好拒绝**（不静默踩上游 400，也不静默回退）。所以**自动抓的群图大概率非标准尺寸会被拒**，实际最稳的是**对 NAI 之前自己生成的图迭代重绘**。图以 base64 直接进 `content_json`（MB 级），全程不进 director / 任何文本 LLM，相关日志一律短 repr（base64 铁律）。i2i 只覆盖 `size`、加 `i2i` 字段，不碰 prompt，与多人 `characters[]` 通道正交可共存。
 
 ### NAI Vibe Transfer 风格迁移（NewAPI §20.3）
 
@@ -231,6 +234,14 @@ NewAPI 要求 `i2i.image` 宽高必须**严格等于**外层 `size`，而本仓�
 NAI 对 vibe 参考图编码按次收 1 anlas。网关在响应里以 HTML 注释回传 `vibe_cache_ids`，本插件把 `(图 hash + info_extracted + model) → cache_id` 落本地 SQLite（`data/nai_vibe_cache.db`，不污染宿主库）。下次同图同参数请求自动改走 `cache_id` 复用态省编码计费。`[nai_chat_client]` 的 `vibe_cache_enabled`（默认 `true`）控制开关，仅对 `nai_vibe` 预设生效。**失败安全铁律**：查改写/落库/解析任何环节出错都降级为正常编码、绝不阻断出图；服务端 `cache_id` 失效（疑似 stale 400）会自动清本地并以编码态重试一次。聊天场景参考图常变命中率有限，可按需关闭。
 
 > i2i / vibe / 角色参考三者走**同一张引用图来源**（强制收集 `quoted_image_base64`），独立预设触发、互斥（一个预设一种能力）；图全程不进 director / 文本 LLM，含图日志一律短 repr（base64 铁律）。**砍掉的切口**：inpaint（原插件就没实现、聊天场景给不出精确蒙版）、命名图库 + 入站缓存 + 多图 vibe（重型有状态基础设施，与 config-driven 理念冲突）。
+
+### NAI 反推 `/nai 反推`（图 → Danbooru tag）
+
+把一张图反推成 tag 串回给用户。两级：① **PNG 元数据**（纯标准库解 tEXt/iTXt/zTXt，读 NAI/SD 自己写进图里的 prompt，零网络、命中即返回）→ ② 未命中走 **WD14 在线 Space 兜底**（多 HF Space 轮询识别任意图，含非 AI 图 / 照片）。取图：发命令时附带图、或引用一张图片消息。
+
+WD14 是**软依赖**：需 `pip install gradio_client`，没装则只有元数据反推可用、兜底自动跳过（友好提示，不报错）。`[retag]` 配置：`enabled` / `wd14_enabled` / `wd14_threshold` / `wd14_timeout` 等。
+
+> **WD14 连 HuggingFace 的网络坑**：gradio_client 连 Space 前要先访问 `huggingface.co` 拿 manifest。国内网络常**连不上**，或代理 / 网关对 HF 做 **SSL 中间人**导致证书校验失败、全 Space 挂。两个配置应对：`wd14_proxy`（填本地代理如 `http://127.0.0.1:7890`）+ `wd14_insecure_ssl`（代理做中间人、证书 Python 不认时设 `true` 绕过校验）。实现用 huggingface_hub 官方 `configure_http_backend` 定点设这条 session 的 proxy + verify，**只影响 hf_hub、不污染插件其它请求**。失败文案区分「服务级失败（Space 挂 / 网络）」与「真没识别到内容」，不再笼统误导成「这张图可能不是 AI 生成」。
 
 > 切到 NAI：把 `active_preset` 设为某个 NAI 预设名（如 `nai_default`），或 `/dr use nai_default`。
 
@@ -461,6 +472,9 @@ global_blacklist = []
 | NAI 复刻：online tag 检索（Danbooru 语义匹配 + 共现推荐喂 `nai_director`，失败安全降级、可配置关闭） | ✅ |
 | NAI 复刻：会话态 continuity（上一轮 tag 续承 + 三档继承规则让大脑自判，per-chat 内存 + TTL） | ✅ |
 | NAI 复刻：反推 `/nai 反推`（PNG 元数据读 prompt + WD14 在线 Space 兜底，软依赖 gradio_client、失败安全降级） | ✅ |
+| NAI 复刻：意图提炼器 `nai_intent`（出图前剥离叙事/口癖/钠自夸，只留画面要素再喂检索 + `nai_director`） | ✅ |
+| NAI 复刻：i2i 自动选择（bot 主动发起；引用图硬触发 / 无引用大脑判 `image_op` 抓群里最近图；仅 `nai_default`→`nai_i2i`） | ✅ |
+| NAI 复刻：tag 检索网络故障重试 + WD14 连 HF 走代理/可绕 SSL 中间人（`wd14_proxy` / `wd14_insecure_ssl`） | ✅ |
 | 独立 WebUI（替代框架自带的 ConfigLayout） | 🚧 |
 | 跨任务持久化变量 | 🚧 |
 | 决策器流式调用 | 🚧 |
