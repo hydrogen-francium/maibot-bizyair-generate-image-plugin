@@ -9,6 +9,7 @@ from .components.generate_image_action import GenerateImageAction
 from .components.nai_commands import (
     Nai0Command,
     NaiArtCommand,
+    NaiArtPhotoSaveCommand,
     NaiModelsCommand,
     NaiNsfwCommand,
     NaiRandomCommand,
@@ -724,6 +725,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         GenerateImageAction.nai_model = str(config.get("nai_model", "")).strip()
         GenerateImageAction.nai_sfw_filter = bool(config.get("nai_sfw_filter", False))
         GenerateImageAction.nai_artist = str(config.get("nai_artist", "")).strip()
+        GenerateImageAction.nai_vibe_refs = str(config.get("nai_vibe_refs", "")).strip()
         GenerateImageAction.nai_size = str(config.get("nai_size", "auto")).strip() or "auto"
         permission_manager.configure(
             global_blacklist=permission_config.get("global_blacklist", DEFAULT_PERMISSION_USER_LIST),
@@ -740,6 +742,7 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         components.append((NaiModelsCommand.get_command_info(), NaiModelsCommand))
         components.append((NaiNsfwCommand.get_command_info(), NaiNsfwCommand))
         components.append((NaiArtCommand.get_command_info(), NaiArtCommand))
+        components.append((NaiArtPhotoSaveCommand.get_command_info(), NaiArtPhotoSaveCommand))
         components.append((NaiSizeCommand.get_command_info(), NaiSizeCommand))
         components.append((Nai0Command.get_command_info(), Nai0Command))
         components.append((NaiRandomCommand.get_command_info(), NaiRandomCommand))

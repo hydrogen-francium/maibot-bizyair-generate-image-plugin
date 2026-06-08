@@ -378,6 +378,7 @@ async def build_provider_payload(
         active_preset: str,
         nai_model_override: str = "",
         nai_sfw_filter: bool = False,
+        nai_vibe_refs: str = "",
 ) -> tuple[dict[str, Any], float]:
     """按后端构造请求载荷与超时配置。"""
     preset = resolved_preset["preset"]
@@ -426,6 +427,24 @@ async def build_provider_payload(
         i2i_enabled = _is_i2i_preset(preset)
         vibe_enabled = _is_vibe_preset(preset)
         charref_enabled = _is_charref_preset(preset)
+
+        # 画风参考图库（多图 vibe，跨预设可叠加）：选中态 nai_vibe_refs 非空时，读图库的图组 controlnet，
+        # 即便当前是 nai_default 普通文生图也启用 vibe 通道（controlnet 与 prompt 正交、可叠加）。
+        # 与文本画师串互斥由 inject_nai_runtime_inputs 处理（图非空时画师串本次让位）。
+        vibe_images_data: list[dict[str, Any]] = []
+        if not i2i_enabled and not charref_enabled:  # 不和 i2i/charref 抢（一次一种图能力）
+            try:
+                from .nai_vibe_refs import load_selected_images_base64
+                vibe_images_data = load_selected_images_base64(
+                    str(nai_vibe_refs or ""),
+                    get_config("nai_chat_client.nai_vibe_presets", []),
+                )
+            except Exception as exc:  # 失败安全：读图库出错不阻断出图
+                logger.warning(f"{log_prefix} 画风图库读取失败，跳过: {exc}")
+                vibe_images_data = []
+            if vibe_images_data:
+                vibe_enabled = True  # 图库选了图 → 强制启用 vibe 通道（叠加在当前出图上）
+
         needs_image = i2i_enabled or vibe_enabled or charref_enabled
         quoted_image = str(builtin_placeholder_values.get("{quoted_image_base64}") or "") if needs_image else ""
         # model 提前解析：builder 据此判定多角色 characters[] 通道（§7）与角色参考模型门槛（§20.4 仅 V4.5）
@@ -444,7 +463,8 @@ async def build_provider_payload(
             i2i_strength=preset.get("i2i_strength"),
             i2i_noise=preset.get("i2i_noise"),
             vibe_enabled=vibe_enabled,
-            vibe_image=quoted_image if vibe_enabled else "",
+            vibe_image=quoted_image if (vibe_enabled and not vibe_images_data) else "",
+            vibe_images_data=vibe_images_data,
             vibe_info_extracted=preset.get("vibe_info_extracted"),
             vibe_reference_strength=preset.get("vibe_reference_strength"),
             vibe_strength=preset.get("vibe_strength"),
@@ -485,6 +505,7 @@ async def resolve_to_payload(
         chat_id: Any,
         image_base64_provider: Optional[ImageBase64Provider] = None,
         nai_artist: str = "",
+        nai_vibe_refs: str = "",
         nai_size: str = "auto",
         nai_model: str = "",
         nai_sfw_filter: bool = False,
@@ -515,7 +536,15 @@ async def resolve_to_payload(
 
     # NAI 运行时设置（画师串/尺寸）注入；仅 NAI 预设生效，GPT 路径不受影响
     if provider == "nai_chat":
-        inject_nai_runtime_inputs(action_inputs, nai_artist=nai_artist, nai_size=nai_size, log_prefix=log_prefix)
+        # 画风图与文本画师串互斥：选了画风图（nai_vibe_refs 非空）则画师串本次让位（图优先，
+        # 避免文本画师串和图画风互相抢→画崩）。config 里的画师串不动，只是本次不拼。/nai0 直发不受影响。
+        effective_artist = nai_artist
+        if not str(action_inputs.get("nai_raw_tags") or "").strip():
+            if str(nai_vibe_refs or "").strip():
+                if str(nai_artist or "").strip():
+                    logger.info(f"{log_prefix} 已选画风参考图 → 本次画师串让位（图优先）")
+                effective_artist = ""
+        inject_nai_runtime_inputs(action_inputs, nai_artist=effective_artist, nai_size=nai_size, log_prefix=log_prefix)
         # translater：提炼意图（剥离叙事/口癖），结果同时供下方检索 query 和 nai_director；
         # 取最近聊天上下文喂 translater（/nai0 直发时下方会跳过提炼，这里取了也不浪费——有缓存）
         _recent_ctx = ""
@@ -612,6 +641,7 @@ async def resolve_to_payload(
         active_preset=active_preset,
         nai_model_override=nai_model,
         nai_sfw_filter=nai_sfw_filter,
+        nai_vibe_refs=nai_vibe_refs,
     )
     logger.info(
         f"{log_prefix} 出图载荷就绪: provider={provider}, active_preset={active_preset!r}, "

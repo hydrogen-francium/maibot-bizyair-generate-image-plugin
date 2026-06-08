@@ -63,6 +63,7 @@ class GenerateImageAction(BaseAction):
     nai_model = ""          # 覆盖当前 NAI 预设的 model；空 = 用预设原值
     nai_sfw_filter = False  # SFW 过滤开关（/nai nsfw on|off）
     nai_artist = ""         # 已解析的画师串（/nai art 选定预设后存全名）；空 = 不注入画师段
+    nai_vibe_refs = ""      # 画风参考图选中态（/nai art photo 选的预设名，逗号分隔）；非空时画师串让位、挂多图 vibe
     nai_size = "auto"       # 尺寸代号 v/h/s/auto（/nai size）；auto = 跟随画面比例
 
     action_parameters: dict[str, ActionParameterDefinition] = {
@@ -182,6 +183,7 @@ class GenerateImageAction(BaseAction):
                 chat_id=self.chat_id,
                 image_base64_provider=image_provider,
                 nai_artist=self.nai_artist,
+                nai_vibe_refs=self.nai_vibe_refs,
                 nai_size=self.nai_size,
                 nai_model=self.nai_model,
                 nai_sfw_filter=self.nai_sfw_filter,

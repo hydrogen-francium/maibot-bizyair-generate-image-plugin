@@ -22,9 +22,11 @@ from src.common.logger import get_logger
 from src.plugin_system import BaseCommand
 
 from .generate_image_action import GenerateImageAction
+from .nai_retag_command import extract_image_base64_from_message as _extract_image_from_message
 from ..services import nai_draw_core
 from ..services import nai_random_scene
 from ..services import nai_settings
+from ..services import nai_vibe_refs
 from ..services import permission_manager
 from ..services.log_utils import short_repr
 
@@ -73,6 +75,7 @@ async def _run_nai_draw(
             chat_id=chat_id,
             image_base64_provider=None,
             nai_artist=GenerateImageAction.nai_artist,
+            nai_vibe_refs=GenerateImageAction.nai_vibe_refs,
             nai_size=GenerateImageAction.nai_size,
             nai_model=GenerateImageAction.nai_model,
             nai_sfw_filter=GenerateImageAction.nai_sfw_filter,
@@ -231,18 +234,33 @@ class NaiArtCommand(BaseCommand):
 
         arg = (self.matched_groups.get("arg") or "").strip()
         raw_presets = self.get_config("nai_chat_client.nai_artist_presets", []) or []
+        raw_vibe = self.get_config("nai_chat_client.nai_vibe_presets", []) or []
         current = str(GenerateImageAction.nai_artist or "").strip()
+        cur_vibe = str(GenerateImageAction.nai_vibe_refs or "").strip()
 
+        # 无参：画师串 + 画风图并列菜单
         if not arg:
-            current_text = current or "（未设置，不注入画师串）"
+            artist_text = current or "（未设置）"
+            vibe_text = cur_vibe or "（未选）"
+            active_note = "（画风图生效中，画师串本次让位）" if cur_vibe else ""
             await self.send_text(
-                "🎨 当前 NAI 画师串：\n"
-                f"  {current_text}\n\n"
-                f"可选预设：\n{nai_settings.artist_presets_help(raw_presets)}\n\n"
-                "用法：/nai art <序号|名称> 切换；/nai art off 取消"
+                "🎨 NAI 画风设置\n"
+                f"【文本画师串】当前：{artist_text}{'' if cur_vibe == '' else '（被画风图覆盖）'}\n"
+                f"{nai_settings.artist_presets_help(raw_presets)}\n"
+                f"  切换：/nai art <序号|名称>；取消：/nai art off\n\n"
+                f"【画风参考图】当前：{vibe_text} {active_note}\n"
+                f"{nai_vibe_refs.vibe_presets_help(raw_vibe)}\n"
+                "  选择(可多张)：/nai art photo <序号...>，如 /nai art photo 1 2；取消：/nai art photo off\n"
+                "  存图：/nai art photo save <名字> + 引用一张图\n\n"
+                "注：画师串与画风图互斥——选了画风图，出图就用图做画风、画师串本次不拼。"
             )
-            return True, "查看 NAI 画师串", 1
+            return True, "查看 NAI 画风设置", 1
 
+        # 画风图子命令分流：/nai art photo ...
+        if arg.lower() == "photo" or arg.lower().startswith("photo "):
+            return await self._handle_photo(arg, raw_vibe)
+
+        # 文本画师串（原逻辑）
         status, name, prompt = nai_settings.resolve_artist_choice(arg, raw_presets)
 
         if status == "clear":
@@ -256,14 +274,110 @@ class NaiArtCommand(BaseCommand):
             GenerateImageAction.nai_artist = prompt
             persisted = nai_settings.save_setting(nai_settings.NAI_ARTIST_KEY, prompt)
             tip = "已保存到配置。" if persisted else "(写回配置失败，重启后恢复)"
-            await self.send_text(f"✅ NAI 画师串已切换为「{name}」：\n  {prompt}\n{tip}")
+            vibe_warn = "\n⚠️ 当前已选画风参考图，画师串会被它覆盖；如需用画师串请先 /nai art photo off" if cur_vibe else ""
+            await self.send_text(f"✅ NAI 画师串已切换为「{name}」：\n  {prompt}\n{tip}{vibe_warn}")
             return True, f"切换 NAI 画师串 -> {name}", 1
 
         await self.send_text(
             f'无法识别画师选择 "{arg}"。\n可选预设：\n{nai_settings.artist_presets_help(raw_presets)}\n\n'
-            "用法：/nai art <序号|名称>；/nai art off 取消"
+            "用法：/nai art <序号|名称>；/nai art off 取消；/nai art photo <序号...> 选画风图"
         )
         return False, f"未知画师选择 {arg}", 1
+
+    async def _handle_photo(self, arg: str, raw_vibe) -> Tuple[bool, Optional[str], int]:
+        """处理 /nai art photo 子命令：选择/取消画风参考图（不含 save，save 由带图命令处理）。"""
+        # 去掉开头的 "photo"，剩下的是序号/名字/off
+        rest = arg[len("photo"):].strip()
+        tokens = rest.split() if rest else []
+
+        # save 子命令需带图，这条纯文字路径下提示用法（实际存图走 NaiArtPhotoSaveCommand 宽松 pattern）
+        if tokens and tokens[0].lower() == "save":
+            await self.send_text(
+                "存画风图用法：/nai art photo save <名字>，并**引用一张图片**或随消息附带图片。\n"
+                "（纯文字没有图，存不了）"
+            )
+            return True, "画风图 save 用法", 1
+
+        status, chosen, unknown = nai_vibe_refs.resolve_photo_selection(tokens, raw_vibe)
+
+        if status == "empty":
+            await self.send_text(
+                "🖼 画风参考图：\n"
+                f"{nai_vibe_refs.vibe_presets_help(raw_vibe)}\n\n"
+                "用法：/nai art photo <序号...> 选择(可多张)；/nai art photo off 取消"
+            )
+            return True, "查看画风图", 1
+
+        if status == "clear":
+            GenerateImageAction.nai_vibe_refs = ""
+            persisted = nai_vibe_refs.save_selection("")
+            tip = "已保存。" if persisted else "(写回配置失败，重启后恢复)"
+            await self.send_text(f"✅ 已取消画风参考图，恢复文本画师串/无。{tip}")
+            return True, "取消画风图", 1
+
+        if status == "set":
+            names = [c["name"] for c in chosen]
+            GenerateImageAction.nai_vibe_refs = ",".join(names)
+            persisted = nai_vibe_refs.save_selection(",".join(names))
+            tip = "已保存。" if persisted else "(写回配置失败，重启后恢复)"
+            await self.send_text(
+                f"✅ 已选画风参考图（{len(names)} 张）：{('、'.join(names))}\n"
+                f"出图将用这些图做画风锚定，文本画师串本次让位。{tip}"
+            )
+            return True, f"选画风图 -> {names}", 1
+
+        # unknown
+        hint = f"无法识别：{('、'.join(unknown))}\n" if unknown else ""
+        await self.send_text(
+            f"{hint}可选画风图：\n{nai_vibe_refs.vibe_presets_help(raw_vibe)}\n\n"
+            "用法：/nai art photo <序号...>；/nai art photo off 取消"
+        )
+        return False, f"未知画风图选择 {unknown}", 1
+
+
+class NaiArtPhotoSaveCommand(BaseCommand):
+    """存画风参考图：/nai art photo save <名字> + 引用/附带一张图 → 落盘 reference_images/。
+
+    带图消息：框架用 processed_plain_text 匹配，图占位符会污染该文本且常排命令词前，
+    故 pattern 宽松（容前后占位符、不锚定首尾），参 nai_retag 反推命令的修复。
+    """
+
+    command_name = "nai_art_photo_save"
+    command_description = "存一张画风参考图（/nai art photo save <名字> + 引用图）"
+    command_pattern = r"^.*?/nai\s+art\s+photo\s+save(?:\s+(?P<name>[^\[\]]+?))?(?:\s|\[|$)"
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        deny = _deny_if_no_permission(self)
+        if deny:
+            return True, deny, 1
+
+        name = (self.matched_groups.get("name") or "").strip()
+        if not name:
+            await self.send_text("用法：/nai art photo save <名字>，并引用一张图片或随消息附带图片。")
+            return True, "画风图 save 缺名字", 1
+
+        image_b64 = _extract_image_from_message(self.message)
+        if not image_b64:
+            await self.send_text(
+                f"没找到要存的图片。请在发「/nai art photo save {name}」时附带图片，或引用一张图片消息。"
+            )
+            return True, "画风图 save 无图", 1
+
+        rel_path = nai_vibe_refs.save_reference_image(name, image_b64)
+        if not rel_path:
+            await self.send_text("存图失败（落盘出错），稍后再试。")
+            return True, "画风图 save 落盘失败", 1
+
+        # 落盘成功；array-of-table 自动写回会毁 config 注释，故给出可复制片段让用户贴进 config（配置实现）
+        await self.send_text(
+            f"✅ 画风图已存：{rel_path}\n"
+            f"把下面这段加到 config.toml（[bizyair_generate_image_plugin] 之前），重启后即可 /nai art photo 选中：\n"
+            f"[[nai_chat_client.nai_vibe_presets]]\n"
+            f'name = "{name}"\n'
+            f'path = "{rel_path}"\n'
+            f"# info_extracted = 0.7\n# strength = 0.6"
+        )
+        return True, f"存画风图 {name}", 1
 
 
 class NaiSizeCommand(BaseCommand):

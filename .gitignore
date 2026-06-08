@@ -52,6 +52,13 @@ config.toml
 # ──────────────── 配置备份（按时间戳生成，本地用） ────────────────
 config.toml.backup.*
 
+# ──────────────── 插件私有运行时数据（vibe cache 等 .db，不入库） ────────────────
+/data/
+
+# ──────────────── 画风参考图库（用户存的私人图，不入库；保留目录 .gitkeep） ────────────────
+/reference_images/*
+!/reference_images/.gitkeep
+
 # ──────────────── OS 杂项 ────────────────
 .DS_Store
 Thumbs.db

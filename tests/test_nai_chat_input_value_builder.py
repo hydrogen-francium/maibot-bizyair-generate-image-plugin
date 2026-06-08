@@ -400,12 +400,14 @@ class TestI2iChannel:
 
 
 class TestControlnetChannel:
-    """builder 的 vibe(controlnet) 通道（NewAPI §20.3）：单图组装 + 越界 clamp + 不校验尺寸 + 无图拒绝。"""
+    """builder 的 vibe(controlnet) 通道（NewAPI §20.3）：多图组装 + 越界 clamp + 不校验尺寸 + 无图拒绝。"""
 
-    def test_valid_image_adds_single_controlnet(self):
+    def test_valid_single_image(self):
         payload = {"prompt": "1girl", "size": [832, 1216]}
         NaiChatInputValueBuilder._apply_controlnet_channel(
-            payload, image=_i2i_png_b64(832, 1216), info_extracted=0.5, reference_strength=0.4, overall_strength=0.9
+            payload,
+            images_data=[{"image": _i2i_png_b64(832, 1216), "info_extracted": 0.5, "strength": 0.4}],
+            overall_strength=0.9,
         )
         assert payload["size"] == [832, 1216]          # 不覆盖 size（与 i2i 的关键差异）
         assert payload["prompt"] == "1girl"             # 不碰 prompt
@@ -416,17 +418,53 @@ class TestControlnetChannel:
         assert img0["strength"] == 0.4
         assert payload["controlnet"]["strength"] == 0.9
 
-    def test_empty_image_raises(self):
-        with pytest.raises(ValueError, match="参考图"):
-            NaiChatInputValueBuilder._apply_controlnet_channel(
-                {}, image="", info_extracted=0.7, reference_strength=0.6, overall_strength=1.0
-            )
-
-    def test_non_standard_size_accepted(self):
-        # §20.3 不限边长：非标准尺寸图也不报错（服务端自行 resize），且不覆盖外层 size
+    def test_multi_images(self):
+        # 多图：组成 controlnet.images 多项，各自参数独立
         payload = {}
         NaiChatInputValueBuilder._apply_controlnet_channel(
-            payload, image=_i2i_png_b64(800, 600), info_extracted=0.7, reference_strength=0.6, overall_strength=1.0
+            payload,
+            images_data=[
+                {"image": _i2i_png_b64(832, 1216), "info_extracted": 0.7, "strength": 0.6},
+                {"image": _i2i_png_b64(800, 600), "info_extracted": 0.5, "strength": 0.4},
+            ],
+            overall_strength=1.0,
+        )
+        imgs = payload["controlnet"]["images"]
+        assert len(imgs) == 2
+        assert imgs[0]["info_extracted"] == 0.7 and imgs[1]["info_extracted"] == 0.5
+
+    def test_truncate_to_4(self):
+        payload = {}
+        NaiChatInputValueBuilder._apply_controlnet_channel(
+            payload,
+            images_data=[{"image": _i2i_png_b64(832, 1216)} for _ in range(6)],
+            overall_strength=1.0,
+        )
+        assert len(payload["controlnet"]["images"]) == 4  # 超 4 截断
+
+    def test_per_image_default_falls_back_to_channel_default(self):
+        # 单项缺 info_extracted/strength → 回落入参默认 → 再回落常量
+        payload = {}
+        NaiChatInputValueBuilder._apply_controlnet_channel(
+            payload,
+            images_data=[{"image": _i2i_png_b64(832, 1216)}],
+            info_extracted=0.5, reference_strength=0.45, overall_strength=0.8,
+        )
+        img0 = payload["controlnet"]["images"][0]
+        assert img0["info_extracted"] == 0.5
+        assert img0["strength"] == 0.45
+
+    def test_empty_images_raises(self):
+        with pytest.raises(ValueError, match="参考图"):
+            NaiChatInputValueBuilder._apply_controlnet_channel({}, images_data=[], overall_strength=1.0)
+        with pytest.raises(ValueError, match="参考图"):
+            NaiChatInputValueBuilder._apply_controlnet_channel({}, images_data=[{"image": ""}], overall_strength=1.0)
+
+    def test_non_standard_size_accepted(self):
+        # §20.3 不限边长：非标准尺寸图也不报错（服务端 resize），且不覆盖外层 size
+        payload = {}
+        NaiChatInputValueBuilder._apply_controlnet_channel(
+            payload, images_data=[{"image": _i2i_png_b64(800, 600)}], overall_strength=1.0
         )
         assert payload["controlnet"]["images"][0]["image"]
         assert "size" not in payload
@@ -434,17 +472,19 @@ class TestControlnetChannel:
     def test_clamped(self):
         payload = {}
         NaiChatInputValueBuilder._apply_controlnet_channel(
-            payload, image=_i2i_png_b64(832, 1216), info_extracted=5.0, reference_strength=-1.0, overall_strength=9.0
+            payload,
+            images_data=[{"image": _i2i_png_b64(832, 1216), "info_extracted": 5.0, "strength": -1.0}],
+            overall_strength=9.0,
         )
         img0 = payload["controlnet"]["images"][0]
         assert img0["info_extracted"] == 1.0            # 上界
-        assert img0["strength"] == 0.01                 # 下界（§20.3 单图 strength 0.01~1.0）
+        assert img0["strength"] == 0.01                 # 下界
         assert payload["controlnet"]["strength"] == 1.0 # 上界
 
     def test_defaults(self):
         payload = {}
         NaiChatInputValueBuilder._apply_controlnet_channel(
-            payload, image=_i2i_png_b64(832, 1216), info_extracted=None, reference_strength=None, overall_strength=None
+            payload, images_data=[{"image": _i2i_png_b64(832, 1216)}], overall_strength=None
         )
         img0 = payload["controlnet"]["images"][0]
         assert img0["info_extracted"] == 0.7

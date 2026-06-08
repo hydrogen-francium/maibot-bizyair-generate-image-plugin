@@ -110,6 +110,7 @@ def _setup_plugin_package() -> None:
         f"{_PKG}.services.nai_tag_candidate_resolver",
         f"{_PKG}.services.nai_vibe_cache",
         f"{_PKG}.services.nai_vibe_cache_rewrite",
+        f"{_PKG}.services.nai_vibe_refs",
         f"{_PKG}.services.openapi_input_value_builder",
         f"{_PKG}.services.permission_manager",
         f"{_PKG}.services.preset_resolution",

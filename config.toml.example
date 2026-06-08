@@ -308,6 +308,18 @@ prompt = "artist:wlop, artist:as109"
 name = "清新二次元"
 prompt = "artist:ciloranko, artist:as109, artist:rella"
 
+# 画风参考图预设（Vibe Transfer 画风锚定）：/nai art photo <序号...> 选中（可多选组合，最多 4 张）。
+# 与文本画师串互斥——选了画风图，本次出图就用图做画风、不拼画师 tag（避免抢画风画崩）。
+# name 供选择展示；path 是 reference_images/ 下的图文件（相对插件根目录）。
+# info_extracted（0.01-1.0，默认 0.7）/ strength（0.01-1.0，默认 0.6）可选。
+# 存图：/nai art photo save <名字> + 引用一张图 → 自动落盘 reference_images/，按提示把预设贴到这里。
+# §20.3 不限图尺寸（服务端 resize），任意尺寸图都能用。下面是示例，按需增删。
+# [[nai_chat_client.nai_vibe_presets]]
+# name = "示例画风"
+# path = "reference_images/your_style.png"
+# info_extracted = 0.7
+# strength = 0.6
+
 [bizyair_generate_image_plugin]
 
 action_enabled = true
@@ -319,6 +331,8 @@ enable_splitter = false
 nai_model = ""
 nai_sfw_filter = false
 nai_artist = ""
+# 画风参考图选中态（/nai art photo 选定的预设名，逗号分隔；非空时本次出图用图做画风、忽略 nai_artist）
+nai_vibe_refs = ""
 nai_size = "auto"
 
 # 出图护栏（最小，仅对 ALWAYS 的 generate_image Action 生效；/nai0、/nai 随机、/dr 等显式命令不受限）

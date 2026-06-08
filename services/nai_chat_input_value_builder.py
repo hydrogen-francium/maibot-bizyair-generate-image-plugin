@@ -51,6 +51,7 @@ _VIBE_REF_STRENGTH_RANGE = (0.01, 1.0)
 _VIBE_REF_STRENGTH_DEFAULT = 0.6
 _VIBE_OVERALL_RANGE = (0.0, 1.0)
 _VIBE_OVERALL_DEFAULT = 1.0
+_VIBE_MAX_IMAGES = 4  # §20.3 controlnet.images 上限
 
 # 角色参考（character_references，NewAPI §20.4）取值区间；仅 V4.5 系列、最多 1 张、不限边长。
 _CHARREF_RANGE = (0.0, 1.0)
@@ -89,6 +90,7 @@ class NaiChatInputValueBuilder:
             i2i_noise: Any = None,
             vibe_enabled: bool = False,
             vibe_image: str = "",
+            vibe_images_data: list[dict[str, Any]] | None = None,
             vibe_info_extracted: Any = None,
             vibe_reference_strength: Any = None,
             vibe_strength: Any = None,
@@ -114,9 +116,14 @@ class NaiChatInputValueBuilder:
         if i2i_enabled:
             cls._apply_i2i_channel(payload, image=i2i_image, strength=i2i_strength, noise=i2i_noise)
         if vibe_enabled:
+            # 多图优先：vibe_images_data 每项 {image, info_extracted?, strength?}；
+            # 回退单图 vibe_image（独立 nai_vibe 预设引用图那条路）。
+            images_data = list(vibe_images_data or [])
+            if not images_data and str(vibe_image or "").strip():
+                images_data = [{"image": vibe_image}]
             cls._apply_controlnet_channel(
                 payload,
-                image=vibe_image,
+                images_data=images_data,
                 info_extracted=vibe_info_extracted,
                 reference_strength=vibe_reference_strength,
                 overall_strength=vibe_strength,
@@ -200,32 +207,41 @@ class NaiChatInputValueBuilder:
             cls,
             payload: dict[str, Any],
             *,
-            image: str,
-            info_extracted: Any,
-            reference_strength: Any,
-            overall_strength: Any,
+            images_data: list[dict[str, Any]],
+            info_extracted: Any = None,
+            reference_strength: Any = None,
+            overall_strength: Any = None,
     ) -> None:
-        """组装 NewAPI §20.3 的 controlnet（Vibe Transfer）字段（原地改 payload）；仅 vibe 预设调用。
+        """组装 NewAPI §20.3 的 controlnet（Vibe Transfer）字段（原地改 payload）。
 
-        强兼单图：把一张引用图组成 controlnet.images[0]，info_extracted / 单图 strength / 整体
-        strength 走预设默认（越界 clamp）。§20.3 不限边长（服务端自行 resize），故**不校验尺寸、
-        不覆盖外层 size**——与 i2i 的关键差异。无图抛友好中文错，由 Action 捕获回复用户。
+        多图：``images_data`` 每项 ``{image, info_extracted?, strength?}``，逐张组 controlnet.images；
+        每张缺省的 info_extracted/strength 回落到入参默认（再回落常量），越界 clamp。最多 4 张超量截断。
+        §20.3 不限边长（服务端 resize），故**不校验尺寸、不覆盖外层 size**——与 i2i 的关键差异。
+        无任何有效图抛友好中文错，由 Action 捕获回复用户。多图 cache 由 nai_vibe_cache_rewrite 按 images 数组自动处理。
         """
-        img = str(image or "").strip()
-        if not img:
-            raise ValueError("vibe 预设需要一张参考图，请引用一条带图的消息，或随出图请求附带图片")
-        entry = {
-            "image": normalize_image_base64(img),
-            "info_extracted": cls._clamp_range(info_extracted, *_VIBE_INFO_RANGE, default=_VIBE_INFO_DEFAULT),
-            "strength": cls._clamp_range(reference_strength, *_VIBE_REF_STRENGTH_RANGE, default=_VIBE_REF_STRENGTH_DEFAULT),
-        }
+        entries: list[dict[str, Any]] = []
+        for item in (images_data or []):
+            img = str((item or {}).get("image") or "").strip()
+            if not img:
+                continue
+            ie = item.get("info_extracted", info_extracted)
+            st = item.get("strength", reference_strength)
+            entries.append({
+                "image": normalize_image_base64(img),
+                "info_extracted": cls._clamp_range(ie, *_VIBE_INFO_RANGE, default=_VIBE_INFO_DEFAULT),
+                "strength": cls._clamp_range(st, *_VIBE_REF_STRENGTH_RANGE, default=_VIBE_REF_STRENGTH_DEFAULT),
+            })
+            if len(entries) >= _VIBE_MAX_IMAGES:
+                break
+        if not entries:
+            raise ValueError("vibe 需要至少一张参考图，请引用带图消息 / 附带图片，或先用 /nai art photo save 存图")
         payload["controlnet"] = {
-            "images": [entry],
+            "images": entries,
             "strength": cls._clamp_range(overall_strength, *_VIBE_OVERALL_RANGE, default=_VIBE_OVERALL_DEFAULT),
         }
         logger.info(
-            f"[NAI Chat 构造] vibe(controlnet) 通道启用: 单图, info_extracted={entry['info_extracted']}, "
-            f"strength={entry['strength']}, overall={payload['controlnet']['strength']}"
+            f"[NAI Chat 构造] vibe(controlnet) 通道启用: {len(entries)} 图, "
+            f"overall={payload['controlnet']['strength']}"
         )
 
     @classmethod
