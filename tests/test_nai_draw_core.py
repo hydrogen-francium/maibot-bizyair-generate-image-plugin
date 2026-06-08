@@ -116,8 +116,14 @@ class TestResolveToPayloadNai0:
         assert content["negative_prompt"] == NAI_NEGATIVE
         # aspect_ratio=9:16 + nai_size=auto → 代号 v → [832, 1216]（value_type=json 解析成 list）
         assert content["size"] == [832, 1216]
-        assert content["steps"] == 23
+        assert content["steps"] == 28
         assert content["n_samples"] == 1
+        # 采样参数（对齐 NAI 面板默认）：scale/sampler/noise_schedule/cfg_rescale；seed 不配=留空随机
+        assert content["scale"] == 7.0
+        assert content["sampler"] == "k_euler_ancestral"
+        assert content["noise_schedule"] == "karras"
+        assert content["cfg_rescale"] == 0.5
+        assert "seed" not in content
 
     @pytest.mark.asyncio
     async def test_nai0_provider_payload_carries_preset_credentials(self, get_config, action_parameters, required_params):

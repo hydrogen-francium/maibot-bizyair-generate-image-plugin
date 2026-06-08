@@ -193,15 +193,15 @@ value = "{nai_size}"
 preset_name = "nai_default"
 field = "steps"
 value_type = "int"
-value = "23"
+value = "28"
 
 # 采样参数（直接进 content_json 发给 NewAPI 网关；改值即生效，无需改代码）：
-# scale=提示词引导强度/CFG（NAI4.5 常用 5-6）；float 用 json 类型表达
+# scale=提示词引导强度/CFG（NAI4.5 常用 5-7）；float 用 json 类型表达
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
 field = "scale"
 value_type = "json"
-value = "5.0"
+value = "7.0"
 
 # sampler=采样器算法（k_euler_ancestral / k_dpmpp_2m / k_dpmpp_sde 等）
 [[nai_chat_client.parameter_mappings]]
@@ -217,20 +217,14 @@ field = "noise_schedule"
 value_type = "string"
 value = "karras"
 
-# cfg_rescale=CFG 重缩放（0~1，0=不重缩放）；float 用 json 类型表达
+# cfg_rescale=CFG 重缩放/提示词引导缩放（0~1，缓解高 scale 过饱和）；float 用 json 类型表达
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
 field = "cfg_rescale"
 value_type = "json"
-value = "0.0"
+value = "0.5"
 
-# seed=随机种子。-1=每次随机；改成非负整数则固定可复现同图
-[[nai_chat_client.parameter_mappings]]
-preset_name = "nai_default"
-field = "seed"
-value_type = "int"
-value = "-1"
-
+# seed 不配 = 留空 = 每次随机（对齐 NAI 面板「Seed 留空」）；想固定复现加一条 field="seed" value="具体非负整数"
 [[nai_chat_client.parameter_mappings]]
 preset_name = "nai_default"
 field = "n_samples"

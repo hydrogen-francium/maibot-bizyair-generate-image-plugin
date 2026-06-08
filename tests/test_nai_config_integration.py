@@ -123,9 +123,9 @@ class TestNaiConfigIntegration:
         # parse 不抛错即通过校验
         NaiChatInputValueBuilder.parse_parameter_bindings(raw)
         fields = {m["field"]: m for m in raw}
-        # 基础字段 + 采样参数（scale/sampler/noise_schedule/cfg_rescale/seed）
+        # 基础字段 + 采样参数（scale/sampler/noise_schedule/cfg_rescale；seed 默认不配=留空随机）
         assert {"prompt", "negative_prompt", "size", "steps", "n_samples"} <= set(fields)
-        assert {"scale", "sampler", "noise_schedule", "cfg_rescale", "seed"} <= set(fields)
+        assert {"scale", "sampler", "noise_schedule", "cfg_rescale"} <= set(fields)
         assert fields["prompt"]["value"] == "{nai_final_prompt}"
         assert fields["negative_prompt"]["value"] == "{nai_negative}"
         assert fields["size"]["value"] == "{nai_size}"
