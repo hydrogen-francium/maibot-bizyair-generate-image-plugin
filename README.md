@@ -201,6 +201,7 @@ NAI 预设走一条**独立的单次大脑** `nai_director`（移植 nai_draw �
 `nai_artist`（画师串）和 `nai_size`（尺寸）不是自定义变量，而是由 Action 在出图时作为**伪 action_input 注入**（仅 NAI 预设生效），背后的值由命令控制、写回 config 持久：
 
 - **画师串** `/nai art <序号|名称>` 从 `[[nai_chat_client.nai_artist_presets]]` 选一套，`/nai art off` 取消。顺序固定 **质量词 → 画师串 → 主体**。大脑不输出画师 tag，统一由这里控制，避免每张图风格漂移。
+- **画风参考图** `/nai art photo <序号...>` 从 `[[nai_chat_client.nai_vibe_presets]]`（name + 图 path）选**一张或多张**（多图 Vibe Transfer 画风锚定，最多 4 张），`off` 取消。**与文本画师串互斥、图优先**：选了画风图，出图本次用图做画风、画师串让位（config 里的画师串不动，`off` 后自动恢复）。`/nai art photo save <名字>` + 引用图可即时存图入库（落盘 `reference_images/`）。底层走 controlnet（§20.3），与 prompt 正交，可叠加在普通文生图上，不限图尺寸。
 - **尺寸** `/nai size v|h|s|auto`：v 竖 832×1216 / h 横 1216×832 / s 方 1024×1024 / auto 跟随画面 `aspect_ratio`。`nai_size` dict 按注入的 `nai_size_code` 映射到像素。
 
 ### 中文强制清洗（NewAPI §8）
@@ -297,7 +298,9 @@ NAI 不支持 `upload`（NAI Chat 接口不需要图片 URL 输入）。
 | `/nai set [代号]` | 查看 / 切换 NAI 模型全局覆盖（如 `/nai set 4.5`；`/nai set off` 取消） |
 | `/nai models` | 列出可用 NAI 模型代号 + 各预设自带 model |
 | `/nai nsfw [on\|off]` | 查看 / 开关 SFW 过滤（开=剔除擦边 tag；默认关，允许轻量暴露） |
-| `/nai art [序号\|名称\|off]` | 查看 / 切换画师串预设（读 `nai_artist_presets`） |
+| `/nai art [序号\|名称\|off]` | 查看 / 切换文本画师串预设（读 `nai_artist_presets`）；无参时菜单并列显示画师串 + 画风图 |
+| `/nai art photo [序号...\|off]` | 选画风参考图（可多选组合多图 vibe，如 `/nai art photo 1 2`，最多 4 张）；与画师串互斥、图优先；`off` 取消 |
+| `/nai art photo save <名字>` | 引用 / 附带一张图存为画风参考图（落盘 `reference_images/`，按回复提示把预设贴进 config 重启生效） |
 | `/nai size [v\|h\|s\|auto]` | 查看 / 切换出图尺寸（竖 / 横 / 方 / 跟随比例） |
 | `/nai0 <英文 tag>` | 直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，自动套质量词 / 画师串 / 负面词 / 尺寸 |
 | `/nai 随机[自拍]` | 随机出图：随机创作方向交给 `nai_director` 自由发挥，`自拍` 走自拍构图 |
@@ -366,7 +369,13 @@ global_blacklist = []
 | --- | --- |
 | `presets[]` | 单独维护 `base_url` / `api_key` / `model` |
 | `parameter_mappings[]` | 顶层 JSON key + 值模板，结构同 BizyAir 但**不支持 upload** |
+| `nai_artist_presets[]` | 文本画师串预设（`name` + `prompt`），`/nai art` 选 |
+| `nai_vibe_presets[]` | 画风参考图预设（`name` + `path` + 可选 `info_extracted` / `strength`），`/nai art photo` 选 |
+| `vibe_cache_enabled` | vibe 参考图 cache_id 复用开关（省 anlas，默认 true） |
+| `intent_refine_template` | 意图提炼器（translater）模板，出图前剥离叙事/口癖 |
 | `timeout` | 同 BizyAir |
+
+**出图采样参数**走 `parameter_mappings`（配啥发啥，改值即生效、无需改代码）：`steps`(迭代步数，默认 23) / `scale`(提示词引导强度 CFG，默认 5.0) / `sampler`(采样器，默认 k_euler_ancestral) / `noise_schedule`(噪声调度，karras/exponential/polyexponential) / `cfg_rescale`(CFG 重缩放 0~1) / `seed`(随机种子，-1 随机、非负整数可复现)。**注意浮点参数**（scale/cfg_rescale）要用 `value_type = "json"`（builder 的 value_type 只支持 string/int/boolean/json，没有 float；json 能解析 `"5.0"` 为浮点）。
 
 ### `bizyair_generate_image_plugin`
 
@@ -475,6 +484,8 @@ global_blacklist = []
 | NAI 复刻：意图提炼器 `nai_intent`（出图前剥离叙事/口癖/钠自夸，只留画面要素再喂检索 + `nai_director`） | ✅ |
 | NAI 复刻：i2i 自动选择（bot 主动发起；引用图硬触发 / 无引用大脑判 `image_op` 抓群里最近图；仅 `nai_default`→`nai_i2i`） | ✅ |
 | NAI 复刻：tag 检索网络故障重试 + WD14 连 HF 走代理/可绕 SSL 中间人（`wd14_proxy` / `wd14_insecure_ssl`） | ✅ |
+| NAI 复刻：画风参考图库（命名存图 + 多图 vibe + `/nai art photo` 切换，与画师串互斥、图优先） | ✅ |
+| NAI 复刻：出图采样参数可配（`scale` / `sampler` / `noise_schedule` / `cfg_rescale` / `seed`，走 `parameter_mappings`） | ✅ |
 | 独立 WebUI（替代框架自带的 ConfigLayout） | 🚧 |
 | 跨任务持久化变量 | 🚧 |
 | 决策器流式调用 | 🚧 |
