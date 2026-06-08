@@ -123,10 +123,15 @@ class TestNaiConfigIntegration:
         # parse 不抛错即通过校验
         NaiChatInputValueBuilder.parse_parameter_bindings(raw)
         fields = {m["field"]: m for m in raw}
-        assert set(fields) == {"prompt", "negative_prompt", "size", "steps", "n_samples"}
+        # 基础字段 + 采样参数（scale/sampler/noise_schedule/cfg_rescale/seed）
+        assert {"prompt", "negative_prompt", "size", "steps", "n_samples"} <= set(fields)
+        assert {"scale", "sampler", "noise_schedule", "cfg_rescale", "seed"} <= set(fields)
         assert fields["prompt"]["value"] == "{nai_final_prompt}"
         assert fields["negative_prompt"]["value"] == "{nai_negative}"
         assert fields["size"]["value"] == "{nai_size}"
+        # 浮点参数用 json 类型表达（builder value_type 不支持 float）
+        assert fields["scale"]["value_type"] == "json"
+        assert fields["cfg_rescale"]["value_type"] == "json"
         assert fields["size"]["value_type"] == "json"
 
     def test_nai_default_preset_resolves_to_nai_chat(self, config):
