@@ -437,7 +437,8 @@ async def build_provider_payload(
                 from .nai_vibe_refs import load_selected_images_base64
                 vibe_images_data = load_selected_images_base64(
                     str(nai_vibe_refs or ""),
-                    get_config("nai_chat_client.nai_vibe_presets", []),
+                    default_info_extracted=get_config("nai_chat_client.vibe_default_info_extracted", None),
+                    default_strength=get_config("nai_chat_client.vibe_default_strength", None),
                 )
             except Exception as exc:  # 失败安全：读图库出错不阻断出图
                 logger.warning(f"{log_prefix} 画风图库读取失败，跳过: {exc}")

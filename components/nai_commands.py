@@ -234,7 +234,6 @@ class NaiArtCommand(BaseCommand):
 
         arg = (self.matched_groups.get("arg") or "").strip()
         raw_presets = self.get_config("nai_chat_client.nai_artist_presets", []) or []
-        raw_vibe = self.get_config("nai_chat_client.nai_vibe_presets", []) or []
         current = str(GenerateImageAction.nai_artist or "").strip()
         cur_vibe = str(GenerateImageAction.nai_vibe_refs or "").strip()
 
@@ -249,7 +248,7 @@ class NaiArtCommand(BaseCommand):
                 f"{nai_settings.artist_presets_help(raw_presets)}\n"
                 f"  切换：/nai art <序号|名称>；取消：/nai art off\n\n"
                 f"【画风参考图】当前：{vibe_text} {active_note}\n"
-                f"{nai_vibe_refs.vibe_presets_help(raw_vibe)}\n"
+                f"{nai_vibe_refs.vibe_images_help()}\n"
                 "  选择(可多张)：/nai art photo <序号...>，如 /nai art photo 1 2；取消：/nai art photo off\n"
                 "  存图：/nai art photo save <名字> + 引用一张图\n\n"
                 "注：画师串与画风图互斥——选了画风图，出图就用图做画风、画师串本次不拼。"
@@ -258,7 +257,7 @@ class NaiArtCommand(BaseCommand):
 
         # 画风图子命令分流：/nai art photo ...
         if arg.lower() == "photo" or arg.lower().startswith("photo "):
-            return await self._handle_photo(arg, raw_vibe)
+            return await self._handle_photo(arg)
 
         # 文本画师串（原逻辑）
         status, name, prompt = nai_settings.resolve_artist_choice(arg, raw_presets)
@@ -284,7 +283,7 @@ class NaiArtCommand(BaseCommand):
         )
         return False, f"未知画师选择 {arg}", 1
 
-    async def _handle_photo(self, arg: str, raw_vibe) -> Tuple[bool, Optional[str], int]:
+    async def _handle_photo(self, arg: str) -> Tuple[bool, Optional[str], int]:
         """处理 /nai art photo 子命令：选择/取消画风参考图（不含 save，save 由带图命令处理）。"""
         # 去掉开头的 "photo"，剩下的是序号/名字/off
         rest = arg[len("photo"):].strip()
@@ -298,12 +297,12 @@ class NaiArtCommand(BaseCommand):
             )
             return True, "画风图 save 用法", 1
 
-        status, chosen, unknown = nai_vibe_refs.resolve_photo_selection(tokens, raw_vibe)
+        status, chosen, unknown = nai_vibe_refs.resolve_photo_selection(tokens)
 
         if status == "empty":
             await self.send_text(
-                "🖼 画风参考图：\n"
-                f"{nai_vibe_refs.vibe_presets_help(raw_vibe)}\n\n"
+                "🖼 画风参考图（扫 reference_images/ 文件夹）：\n"
+                f"{nai_vibe_refs.vibe_images_help()}\n\n"
                 "用法：/nai art photo <序号...> 选择(可多张)；/nai art photo off 取消"
             )
             return True, "查看画风图", 1
@@ -329,7 +328,7 @@ class NaiArtCommand(BaseCommand):
         # unknown
         hint = f"无法识别：{('、'.join(unknown))}\n" if unknown else ""
         await self.send_text(
-            f"{hint}可选画风图：\n{nai_vibe_refs.vibe_presets_help(raw_vibe)}\n\n"
+            f"{hint}可选画风图：\n{nai_vibe_refs.vibe_images_help()}\n\n"
             "用法：/nai art photo <序号...>；/nai art photo off 取消"
         )
         return False, f"未知画风图选择 {unknown}", 1
@@ -363,21 +362,21 @@ class NaiArtPhotoSaveCommand(BaseCommand):
             )
             return True, "画风图 save 无图", 1
 
-        rel_path = nai_vibe_refs.save_reference_image(name, image_b64)
-        if not rel_path:
+        saved_name = nai_vibe_refs.save_reference_image(name, image_b64)
+        if not saved_name:
             await self.send_text("存图失败（落盘出错），稍后再试。")
             return True, "画风图 save 落盘失败", 1
 
-        # 落盘成功；array-of-table 自动写回会毁 config 注释，故给出可复制片段让用户贴进 config（配置实现）
+        # 扫文件夹模式：落盘即入库，立即可选，无需改 config / 重启
+        images = nai_vibe_refs.list_vibe_images()
+        idx = next((i + 1 for i, im in enumerate(images) if im["name"] == saved_name), None)
+        idx_tip = f"（序号 {idx}）" if idx else ""
         await self.send_text(
-            f"✅ 画风图已存：{rel_path}\n"
-            f"把下面这段加到 config.toml（[bizyair_generate_image_plugin] 之前），重启后即可 /nai art photo 选中：\n"
-            f"[[nai_chat_client.nai_vibe_presets]]\n"
-            f'name = "{name}"\n'
-            f'path = "{rel_path}"\n'
-            f"# info_extracted = 0.7\n# strength = 0.6"
+            f"✅ 画风图已存入图库：「{saved_name}」{idx_tip}\n"
+            f"立即可用：/nai art photo {idx or saved_name} 选中它出图。\n"
+            f"当前图库共 {len(images)} 张，/nai art photo 查看全部。"
         )
-        return True, f"存画风图 {name}", 1
+        return True, f"存画风图 {saved_name}", 1
 
 
 class NaiSizeCommand(BaseCommand):

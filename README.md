@@ -201,7 +201,7 @@ NAI 预设走一条**独立的单次大脑** `nai_director`（移植 nai_draw �
 `nai_artist`（画师串）和 `nai_size`（尺寸）不是自定义变量，而是由 Action 在出图时作为**伪 action_input 注入**（仅 NAI 预设生效），背后的值由命令控制、写回 config 持久：
 
 - **画师串** `/nai art <序号|名称>` 从 `[[nai_chat_client.nai_artist_presets]]` 选一套，`/nai art off` 取消。顺序固定 **质量词 → 画师串 → 主体**。大脑不输出画师 tag，统一由这里控制，避免每张图风格漂移。
-- **画风参考图** `/nai art photo <序号...>` 从 `[[nai_chat_client.nai_vibe_presets]]`（name + 图 path）选**一张或多张**（多图 Vibe Transfer 画风锚定，最多 4 张），`off` 取消。**与文本画师串互斥、图优先**：选了画风图，出图本次用图做画风、画师串让位（config 里的画师串不动，`off` 后自动恢复）。`/nai art photo save <名字>` + 引用图可即时存图入库（落盘 `reference_images/`）。底层走 controlnet（§20.3），与 prompt 正交，可叠加在普通文生图上，不限图尺寸。
+- **画风参考图** `/nai art photo <序号...>` 直接扫 `reference_images/` 文件夹（文件名=图名、按名排序编号）选**一张或多张**（多图 Vibe Transfer 画风锚定，最多 4 张），`off` 取消。**丢图进文件夹 / `/nai art photo save <名字>`+引用图存图 → 立即可选，无需配 config、无需重启**。**与文本画师串互斥、图优先**：选了画风图，出图本次用图做画风、画师串让位（config 里的画师串不动，`off` 后自动恢复）。强度走全局默认键 `vibe_default_info_extracted` / `vibe_default_strength`。底层 controlnet（§20.3），与 prompt 正交、可叠加普通文生图、不限图尺寸。
 - **尺寸** `/nai size v|h|s|auto`：v 竖 832×1216 / h 横 1216×832 / s 方 1024×1024 / auto 跟随画面 `aspect_ratio`。`nai_size` dict 按注入的 `nai_size_code` 映射到像素。
 
 ### 中文强制清洗（NewAPI §8）
@@ -300,7 +300,7 @@ NAI 不支持 `upload`（NAI Chat 接口不需要图片 URL 输入）。
 | `/nai nsfw [on\|off]` | 查看 / 开关 SFW 过滤（开=剔除擦边 tag；默认关，允许轻量暴露） |
 | `/nai art [序号\|名称\|off]` | 查看 / 切换文本画师串预设（读 `nai_artist_presets`）；无参时菜单并列显示画师串 + 画风图 |
 | `/nai art photo [序号...\|off]` | 选画风参考图（可多选组合多图 vibe，如 `/nai art photo 1 2`，最多 4 张）；与画师串互斥、图优先；`off` 取消 |
-| `/nai art photo save <名字>` | 引用 / 附带一张图存为画风参考图（落盘 `reference_images/`，按回复提示把预设贴进 config 重启生效） |
+| `/nai art photo save <名字>` | 引用 / 附带一张图存入画风图库（落盘 `reference_images/`，存完立即可 `/nai art photo` 选，无需配 config / 重启） |
 | `/nai size [v\|h\|s\|auto]` | 查看 / 切换出图尺寸（竖 / 横 / 方 / 跟随比例） |
 | `/nai0 <英文 tag>` | 直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，自动套质量词 / 画师串 / 负面词 / 尺寸 |
 | `/nai 随机[自拍]` | 随机出图：随机创作方向交给 `nai_director` 自由发挥，`自拍` 走自拍构图 |
@@ -370,7 +370,7 @@ global_blacklist = []
 | `presets[]` | 单独维护 `base_url` / `api_key` / `model` |
 | `parameter_mappings[]` | 顶层 JSON key + 值模板，结构同 BizyAir 但**不支持 upload** |
 | `nai_artist_presets[]` | 文本画师串预设（`name` + `prompt`），`/nai art` 选 |
-| `nai_vibe_presets[]` | 画风参考图预设（`name` + `path` + 可选 `info_extracted` / `strength`），`/nai art photo` 选 |
+| `vibe_default_info_extracted` / `vibe_default_strength` | 画风参考图（扫 `reference_images/`）的全局画风迁移强度默认值，`/nai art photo` 选 |
 | `vibe_cache_enabled` | vibe 参考图 cache_id 复用开关（省 anlas，默认 true） |
 | `intent_refine_template` | 意图提炼器（translater）模板，出图前剥离叙事/口癖 |
 | `timeout` | 同 BizyAir |

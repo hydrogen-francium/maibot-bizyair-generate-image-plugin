@@ -115,6 +115,11 @@ timeout = 180
 # 出错都降级为正常编码、绝不阻断出图；服务端 cache_id 失效会自动清本地并以编码态重试一次）。
 # 聊天场景参考图常变、命中率有限，可按需关闭。仅对 nai_vibe 预设生效，其它预设无 controlnet 不受影响。
 vibe_cache_enabled = true
+# 画风参考图（/nai art photo）：直接扫 reference_images/ 文件夹（文件名=图名、按名排序编号），
+# 丢图进去或 /nai art photo save 存图即可立即选用，无需配预设、无需重启。
+# 下面两个是所有画风图共用的画风迁移强度默认值：
+vibe_default_info_extracted = 0.7   # 0.01-1.0，从参考图提取多少画风信息
+vibe_default_strength = 0.6         # 0.01-1.0，单图参考强度
 
 # NAI 意图提炼器（translater）模板：出图前由代码（inject_nai_intent）渲染调用，把决策器原始中文意图
 # 里的叙事/动机/口癖剥离，只留纯画面要素，结果同时喂 tag 检索 query 和 nai_director（{nai_intent}）。
@@ -338,17 +343,9 @@ prompt = "artist:wlop, artist:as109"
 name = "清新二次元"
 prompt = "artist:ciloranko, artist:as109, artist:rella"
 
-# 画风参考图预设（Vibe Transfer 画风锚定）：/nai art photo <序号...> 选中（可多选组合，最多 4 张）。
-# 与文本画师串互斥——选了画风图，本次出图就用图做画风、不拼画师 tag（避免抢画风画崩）。
-# name 供选择展示；path 是 reference_images/ 下的图文件（相对插件根目录）。
-# info_extracted（0.01-1.0，默认 0.7）/ strength（0.01-1.0，默认 0.6）可选。
-# 存图：/nai art photo save <名字> + 引用一张图 → 自动落盘 reference_images/，按提示把预设贴到这里。
-# §20.3 不限图尺寸（服务端 resize），任意尺寸图都能用。下面是示例，按需增删。
-# [[nai_chat_client.nai_vibe_presets]]
-# name = "示例画风"
-# path = "reference_images/your_style.png"
-# info_extracted = 0.7
-# strength = 0.6
+# 画风参考图（Vibe Transfer 画风锚定）：不在这里配预设，直接扫 reference_images/ 文件夹
+# （文件名=图名、按名排序编号）。/nai art photo <序号...> 选用（可多选最多 4 张），与文本画师串互斥（图优先）。
+# 强度默认值见上方 nai_chat_client 的 vibe_default_info_extracted / vibe_default_strength。
 
 [bizyair_generate_image_plugin]
 

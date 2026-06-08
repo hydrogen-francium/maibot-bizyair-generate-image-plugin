@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""nai_vibe_refs 单测：画风图库的多选解析 / 读图 / 存图 / help。"""
+"""nai_vibe_refs 单测：画风图库（扫文件夹版）——扫描 / 多选解析 / 读图 / 存图 / help。"""
 
 import base64
 import os
@@ -9,68 +9,63 @@ import pytest
 from services import nai_vibe_refs as vr
 
 
-_PRESETS = [
-    {"name": "梦幻", "path": "reference_images/a.png", "info_extracted": 0.8},
-    {"name": "厚涂", "path": "reference_images/b.jpg"},
-    {"name": "胶片", "path": "reference_images/c.png", "strength": 0.5},
-]
+@pytest.fixture
+def refs_root(tmp_path, monkeypatch):
+    """造一个临时插件根 + reference_images/，放几张假图，让 vr 扫它。"""
+    refdir = tmp_path / "reference_images"
+    refdir.mkdir()
+    (refdir / "梦幻.png").write_bytes(b"AAA")
+    (refdir / "厚涂.jpg").write_bytes(b"BBB")
+    (refdir / "胶片.webp").write_bytes(b"CCC")
+    (refdir / ".gitkeep").write_bytes(b"")        # 非图，应忽略
+    (refdir / "readme.txt").write_bytes(b"x")      # 非图扩展名，应忽略
+    monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))
+    return tmp_path
 
 
-class TestNormalize:
-    def test_skips_invalid(self):
-        raw = [
-            {"name": "ok", "path": "x.png"},
-            {"name": "", "path": "y.png"},       # 无名跳过
-            {"name": "z", "path": ""},           # 无路径跳过
-            "not_a_dict",
-        ]
-        out = vr.normalize_vibe_presets(raw)
-        assert [p["name"] for p in out] == ["ok"]
+class TestListVibeImages:
+    def test_scans_images_sorted(self, refs_root):
+        imgs = vr.list_vibe_images()
+        names = [i["name"] for i in imgs]
+        # 只认图片扩展名，.gitkeep/.txt 被忽略；按文件名排序
+        assert set(names) == {"梦幻", "厚涂", "胶片"}
+        assert names == sorted(names)  # 排序稳定
 
-    def test_non_list(self):
-        assert vr.normalize_vibe_presets(None) == []
+    def test_empty_when_no_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))  # 无 reference_images/
+        assert vr.list_vibe_images() == []
 
 
 class TestResolvePhotoSelection:
-    def test_empty(self):
-        assert vr.resolve_photo_selection([], _PRESETS)[0] == "empty"
+    def test_empty(self, refs_root):
+        assert vr.resolve_photo_selection([])[0] == "empty"
 
-    def test_clear(self):
-        assert vr.resolve_photo_selection(["off"], _PRESETS)[0] == "clear"
-        assert vr.resolve_photo_selection(["取消"], _PRESETS)[0] == "clear"
+    def test_clear(self, refs_root):
+        assert vr.resolve_photo_selection(["off"])[0] == "clear"
+        assert vr.resolve_photo_selection(["取消"])[0] == "clear"
 
-    def test_single_by_index(self):
-        status, chosen, unknown = vr.resolve_photo_selection(["1"], _PRESETS)
-        assert status == "set"
-        assert [c["name"] for c in chosen] == ["梦幻"]
+    def test_single_by_index(self, refs_root):
+        status, chosen, _ = vr.resolve_photo_selection(["1"])
+        assert status == "set" and len(chosen) == 1
 
-    def test_multi_by_index(self):
-        status, chosen, _ = vr.resolve_photo_selection(["1", "2"], _PRESETS)
-        assert status == "set"
-        assert [c["name"] for c in chosen] == ["梦幻", "厚涂"]
+    def test_multi_by_index(self, refs_root):
+        status, chosen, _ = vr.resolve_photo_selection(["1", "2"])
+        assert status == "set" and len(chosen) == 2
 
-    def test_by_name(self):
-        status, chosen, _ = vr.resolve_photo_selection(["胶片"], _PRESETS)
+    def test_by_name(self, refs_root):
+        status, chosen, _ = vr.resolve_photo_selection(["胶片"])
         assert status == "set" and chosen[0]["name"] == "胶片"
 
-    def test_dedup(self):
-        status, chosen, _ = vr.resolve_photo_selection(["1", "1", "梦幻"], _PRESETS)
-        assert status == "set" and len(chosen) == 1  # 同一张去重
+    def test_dedup(self, refs_root):
+        status, chosen, _ = vr.resolve_photo_selection(["1", "1"])
+        assert status == "set" and len(chosen) == 1
 
-    def test_truncate_to_max(self):
-        # 超过 4 张截断
-        many = [{"name": f"p{i}", "path": f"{i}.png"} for i in range(6)]
-        status, chosen, _ = vr.resolve_photo_selection(["1", "2", "3", "4", "5", "6"], many)
-        assert status == "set" and len(chosen) == vr.MAX_VIBE_IMAGES
+    def test_unknown(self, refs_root):
+        status, _, unknown = vr.resolve_photo_selection(["99", "不存在"])
+        assert status == "unknown" and "99" in unknown and "不存在" in unknown
 
-    def test_unknown(self):
-        status, chosen, unknown = vr.resolve_photo_selection(["99", "不存在"], _PRESETS)
-        assert status == "unknown"
-        assert "99" in unknown and "不存在" in unknown
-
-    def test_partial_unknown_is_unknown(self):
-        # 有一个识别不了 → 整体 unknown（提示用户）
-        status, chosen, unknown = vr.resolve_photo_selection(["1", "99"], _PRESETS)
+    def test_partial_unknown_is_unknown(self, refs_root):
+        status, _, unknown = vr.resolve_photo_selection(["1", "99"])
         assert status == "unknown" and "99" in unknown
 
 
@@ -82,59 +77,46 @@ class TestSelectedNames:
 
 
 class TestLoadImages:
-    def test_load_reads_files(self, tmp_path, monkeypatch):
-        # 造两张假图文件，让 _plugin_root 指向 tmp
-        root = tmp_path
-        refdir = root / "reference_images"
-        refdir.mkdir()
-        (refdir / "a.png").write_bytes(b"AAA")
-        (refdir / "b.jpg").write_bytes(b"BBB")
-        monkeypatch.setattr(vr, "_plugin_root", lambda: str(root))
-        presets = [
-            {"name": "梦幻", "path": "reference_images/a.png", "info_extracted": 0.8},
-            {"name": "厚涂", "path": "reference_images/b.jpg", "strength": 0.5},
-        ]
-        out = vr.load_selected_images_base64("梦幻,厚涂", presets)
+    def test_load_reads_files_with_global_defaults(self, refs_root):
+        out = vr.load_selected_images_base64("梦幻,厚涂", default_info_extracted=0.8, default_strength=0.55)
         assert len(out) == 2
         assert out[0]["image"] == base64.b64encode(b"AAA").decode()
-        assert out[0]["info_extracted"] == 0.8
-        assert out[1]["strength"] == 0.5
+        # 全局默认强度应用到每张
+        assert out[0]["info_extracted"] == 0.8 and out[0]["strength"] == 0.55
+        assert out[1]["info_extracted"] == 0.8 and out[1]["strength"] == 0.55
 
-    def test_missing_file_skipped(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))
-        presets = [{"name": "梦幻", "path": "reference_images/nope.png"}]
-        assert vr.load_selected_images_base64("梦幻", presets) == []
+    def test_load_falls_back_to_const_defaults(self, refs_root):
+        out = vr.load_selected_images_base64("梦幻")
+        assert out[0]["info_extracted"] == 0.7 and out[0]["strength"] == 0.6
 
-    def test_preset_not_found_skipped(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))
-        assert vr.load_selected_images_base64("不存在", _PRESETS) == []
+    def test_name_not_in_folder_skipped(self, refs_root):
+        assert vr.load_selected_images_base64("不存在") == []
 
-    def test_empty_selection(self):
-        assert vr.load_selected_images_base64("", _PRESETS) == []
+    def test_empty_selection(self, refs_root):
+        assert vr.load_selected_images_base64("") == []
 
 
 class TestSaveImage:
-    def test_save_落盘(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))
+    def test_save_落盘_returns_name(self, refs_root):
         b64 = base64.b64encode(b"IMGDATA").decode()
-        rel = vr.save_reference_image("我的画风", b64)
-        assert rel == "reference_images/我的画风.png"
-        saved = tmp_path / rel
+        name = vr.save_reference_image("我的画风", b64)
+        assert name == "我的画风"
+        saved = refs_root / "reference_images" / "我的画风.png"
         assert saved.read_bytes() == b"IMGDATA"
+        # 存完立即能扫到
+        assert "我的画风" in [i["name"] for i in vr.list_vibe_images()]
 
-    def test_save_sanitizes_name(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))
+    def test_save_sanitizes_name(self, refs_root):
         b64 = base64.b64encode(b"X").decode()
-        rel = vr.save_reference_image("a/b:c*d", b64)
-        # 非法文件名字符替换为下划线
-        assert "/" not in os.path.basename(rel)
-        assert rel.startswith("reference_images/")
+        name = vr.save_reference_image("a/b:c*d", b64)
+        assert "/" not in name and ":" not in name and "*" not in name
 
 
 class TestHelp:
-    def test_help_lists(self):
-        h = vr.vibe_presets_help(_PRESETS)
-        assert "1. 梦幻" in h and "3. 胶片" in h
+    def test_help_lists(self, refs_root):
+        h = vr.vibe_images_help()
+        assert "梦幻" in h and "胶片" in h
 
-    def test_help_empty(self):
-        assert "未配置" in vr.vibe_presets_help([])
+    def test_help_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vr, "_plugin_root", lambda: str(tmp_path))
+        assert "图库为空" in vr.vibe_images_help()
