@@ -77,6 +77,20 @@ class TestNaiConfigIntegration:
         assert "nai_chat_client" in config
         assert "custom_variables_config" in config
 
+    def test_action_parameters_expose_image_op(self, config):
+        # 问题2 回归锁：image_op 必须暴露给 planner，否则 bot 无法感知/控制 i2i 改图能力
+        params = config["bizyair_generate_image_plugin"]["action_parameters"]
+        by_name = {p["name"]: p for p in params}
+        assert "image_op" in by_name, "action_parameters 缺 image_op，bot 无法自主 i2i 改群里的图"
+        op = by_name["image_op"]
+        assert op.get("required", "选填") == "选填"
+        assert op.get("missing_behavior") == "keep_placeholder"
+
+    def test_action_require_mentions_i2i(self, config):
+        # action_require 必须讲清 i2i 改图能力（硬触发 + image_op 主动），否则 bot 不知情
+        require = config["bizyair_generate_image_plugin"]["action_require"]
+        assert "image_op" in require and "i2i" in require
+
     def test_registry_accepts_nai_wrapper_vars(self, registry):
         defs = registry.variable_definitions
         assert defs["nai_quality"].mode == "literal"

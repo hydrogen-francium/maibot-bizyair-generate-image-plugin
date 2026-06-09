@@ -373,6 +373,18 @@ def _preset_needs_quoted_image(preset: dict[str, Any]) -> bool:
     return _is_i2i_preset(preset) or _is_vibe_preset(preset) or _is_charref_preset(preset)
 
 
+def _should_suppress_artist(nai_raw_tags: Any, nai_vibe_refs: Any, preset: dict[str, Any]) -> bool:
+    """文本画师串是否本次让位（图优先）。
+
+    让位条件：图库画风图（nai_vibe_refs 非空）或 vibe 预设（nai_vibe，引用图画风迁移）——
+    两者都明确用图做画风锚定，与文本画师串冲突。charref（锚角色非画风）与 i2i（重绘，画师串
+    可引导重绘画风）不让位。/nai0 直发（nai_raw_tags 非空）任何情况都不让位。
+    """
+    if str(nai_raw_tags or "").strip():
+        return False
+    return bool(str(nai_vibe_refs or "").strip()) or _is_vibe_preset(preset)
+
+
 # ──────────────── 参数映射 ────────────────
 
 def get_parameter_bindings_config(get_config: ConfigGetter, provider: str) -> list:
@@ -588,14 +600,15 @@ async def resolve_to_payload(
 
     # NAI 运行时设置（画师串/尺寸）注入；仅 NAI 预设生效，GPT 路径不受影响
     if provider == "nai_chat":
-        # 画风图与文本画师串互斥：选了画风图（nai_vibe_refs 非空）则画师串本次让位（图优先，
-        # 避免文本画师串和图画风互相抢→画崩）。config 里的画师串不动，只是本次不拼。/nai0 直发不受影响。
+        # 画风与文本画师串互斥：图库画风图（nai_vibe_refs 非空）或 vibe 预设（nai_vibe，引用图画风迁移）
+        # 都明确用图做画风锚定，与文本画师串冲突 → 画师串本次让位（图优先，避免互相抢→画崩）。
+        # charref（角色参考，锚的是角色不是画风）与 i2i（重绘，画师串可引导重绘画风）不在此列、照常拼画师串。
+        # config 里的画师串不动，只是本次不拼。/nai0 直发不受影响。
         effective_artist = nai_artist
-        if not str(action_inputs.get("nai_raw_tags") or "").strip():
-            if str(nai_vibe_refs or "").strip():
-                if str(nai_artist or "").strip():
-                    logger.info(f"{log_prefix} 已选画风参考图 → 本次画师串让位（图优先）")
-                effective_artist = ""
+        if _should_suppress_artist(action_inputs.get("nai_raw_tags"), nai_vibe_refs, resolved_preset["preset"]):
+            if str(nai_artist or "").strip():
+                logger.info(f"{log_prefix} 已启用画风图/vibe 预设 → 本次画师串让位（图优先）")
+            effective_artist = ""
         inject_nai_runtime_inputs(action_inputs, nai_artist=effective_artist, nai_size=nai_size, log_prefix=log_prefix)
         # NSFW 开关 → director 尺度指令（filter 关=容忍所有 nsfw / 开=SFW）；伪注入 {nai_nsfw_directive}
         inject_nai_nsfw_directive(get_config, action_inputs, nai_sfw_filter=nai_sfw_filter, log_prefix=log_prefix)

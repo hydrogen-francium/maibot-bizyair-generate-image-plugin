@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 from services.action_parameter_utils import build_action_parameters
 from services.nai_draw_core import (
     DrawPayload,
+    _should_suppress_artist,
     inject_nai_intent,
     inject_nai_nsfw_directive,
     inject_previous_context,
@@ -771,3 +772,40 @@ class TestInjectNaiNsfwDirective:
             ai = {}
             inject_nai_nsfw_directive(self._cfg(), ai, nai_sfw_filter=flag)
             assert "nai_nsfw_directive" in ai and ai["nai_nsfw_directive"]
+
+
+class TestShouldSuppressArtist:
+    """画师串让位判定（图优先）：图库画风图 / vibe 预设让位；charref / i2i 不让位；/nai0 不让位。"""
+
+    NAI_DEFAULT: dict = {}
+    NAI_VIBE = {"vibe_info_extracted": 0.7, "vibe_reference_strength": 0.6, "vibe_strength": 1}
+    NAI_CHARREF = {"charref_type": "character&style", "charref_fidelity": 1, "charref_strength": 1}
+    NAI_I2I = {"i2i_strength": 0.7, "i2i_noise": 0}
+
+    def test_plain_text2img_keeps_artist(self):
+        # 普通文生图（无图库图、nai_default）→ 画师串照常拼
+        assert _should_suppress_artist("", "", self.NAI_DEFAULT) is False
+
+    def test_gallery_vibe_ref_suppresses(self):
+        # 图库画风图（/nai art photo）选中 → 让位
+        assert _should_suppress_artist("", "myvibe", self.NAI_DEFAULT) is True
+
+    def test_vibe_preset_suppresses(self):
+        # 问题1 修复点：nai_vibe 预设（引用图画风迁移）→ 让位
+        assert _should_suppress_artist("", "", self.NAI_VIBE) is True
+
+    def test_charref_preset_keeps_artist(self):
+        # charref 锚的是角色不是画风 → 不让位
+        assert _should_suppress_artist("", "", self.NAI_CHARREF) is False
+
+    def test_i2i_preset_keeps_artist(self):
+        # i2i 重绘，画师串可引导重绘画风 → 不让位
+        assert _should_suppress_artist("", "", self.NAI_I2I) is False
+
+    def test_nai0_direct_never_suppresses(self):
+        # /nai0 直发：即便 vibe 预设 + 图库图，也不让位
+        assert _should_suppress_artist("1girl, smile", "myvibe", self.NAI_VIBE) is False
+
+    def test_gallery_ref_wins_even_on_charref_preset(self):
+        # 图库画风图非空 → 让位，即使预设是 charref
+        assert _should_suppress_artist("", "myvibe", self.NAI_CHARREF) is True
