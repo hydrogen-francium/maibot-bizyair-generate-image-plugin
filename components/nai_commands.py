@@ -10,6 +10,7 @@
 出图类（复用 services/nai_draw_core 出图核心，与 Action 同一套管线）：
 - /nai0 <英文 tag>     直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，套包装层
 - /nai 随机[自拍]      随机：把场景交给 nai_director 自由发挥
+- /nai 描述 <文本>     描述：把用户描述当意图注入 director 路径出图
 
 均遵循 bizyair 范式：改 GenerateImageAction 类属性（立即生效）+ save_toml_with_format 写回标量（持久）。
 """
@@ -200,9 +201,12 @@ class NaiNsfwCommand(BaseCommand):
         current = bool(GenerateImageAction.nai_sfw_filter)
 
         if not state:
-            status = "开启（剔除擦边 tag）" if current else "关闭（允许轻量暴露）"
+            status = "开启（SFW：只出全年龄向）" if current else "关闭（放开：容忍所有 NSFW 内容）"
             await self.send_text(
-                f"🔞 NAI SFW 过滤当前：{status}\n用法：/nai nsfw on|off"
+                f"🔞 NAI SFW 过滤当前：{status}\n"
+                "用法：/nai nsfw on|off\n"
+                "  on = SFW，大脑只产出全年龄向、后处理再剔除擦边 tag\n"
+                "  off = 放开，大脑按意图如实表达露骨内容、后处理不删（未成年硬底线任何档位都不放开）"
             )
             return True, "查看 NSFW 过滤", 1
 
@@ -214,8 +218,9 @@ class NaiNsfwCommand(BaseCommand):
         GenerateImageAction.nai_sfw_filter = enabled
         persisted = nai_settings.save_setting(nai_settings.NAI_SFW_FILTER_KEY, enabled)
         tip = "已保存到配置。" if persisted else "(写回配置失败，重启后恢复)"
+        effect = "（SFW：只出全年龄向）" if enabled else "（放开：容忍所有 NSFW，未成年硬底线仍守）"
         await self.send_text(
-            f"✅ NAI SFW 过滤已{'开启' if enabled else '关闭'}。{tip}"
+            f"✅ NAI SFW 过滤已{'开启' if enabled else '关闭'}{effect}。{tip}"
         )
         return True, f"切换 NSFW 过滤 -> {'on' if enabled else 'off'}", 1
 
@@ -471,3 +476,34 @@ class NaiRandomCommand(BaseCommand):
         intent = nai_random_scene.pick_random_intent(selfie=selfie)
         logger.info(f"[nai_random] selfie={selfie}, intent={intent!r}")
         return await _run_nai_draw(self, action_inputs={"image_intent": intent}, log_label="nai_random")
+
+
+class NaiDescribeCommand(BaseCommand):
+    """描述出图：/nai 描述 <文本> —— 把用户给的描述当意图直接注入 NAI 链路。
+
+    与 /nai 随机 同路：用户文本作 image_intent 灌进 director 路径，走 translater 提炼
+    + Danbooru tag 检索 + 包装层，只是意图来自用户而非随机 nudge。质量词/画师串/
+    画风图/负面词/尺寸照常套上（/nai art、/nai size 切）。
+    """
+
+    command_name = "nai_describe"
+    command_description = "按文字描述出图（描述当意图走 LLM 大脑）"
+    command_pattern = r"^/nai\s+描述(?:\s+(?P<intent>.+))?$"
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        deny = _deny_if_no_permission(self)
+        if deny:
+            return True, deny, 1
+
+        intent = (self.matched_groups.get("intent") or "").strip()
+        if not intent:
+            await self.send_text(
+                "用法：/nai 描述 <你想画的内容>\n"
+                "示例：/nai 描述 黄昏的海边，少女撑伞回头\n"
+                "（描述交给 LLM 大脑提炼成画面，自动套质量词/画师串/负面词/尺寸；\n"
+                "想给原始英文 tag 直发请用 /nai0。）"
+            )
+            return True, "查看 /nai 描述 用法", 1
+
+        logger.info(f"[nai_describe] intent={intent!r}")
+        return await _run_nai_draw(self, action_inputs={"image_intent": intent}, log_label="nai_describe")

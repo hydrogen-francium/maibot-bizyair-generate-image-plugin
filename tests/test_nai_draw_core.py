@@ -22,6 +22,7 @@ from services.action_parameter_utils import build_action_parameters
 from services.nai_draw_core import (
     DrawPayload,
     inject_nai_intent,
+    inject_nai_nsfw_directive,
     inject_previous_context,
     inject_tag_candidates,
     record_previous_context,
@@ -722,3 +723,51 @@ class TestRecordPreviousContext:
         inject_previous_context(self._cfg(True), ai, "c1")
         assert "solo, 1girl, beach" in ai["previous_prompt_context"]
         assert "画沙滩" in ai["previous_prompt_context"]
+
+
+class TestInjectNaiNsfwDirective:
+    """/nai nsfw 开关 → director 尺度指令注入：off 容忍所有 nsfw、on 收紧为 SFW。"""
+
+    @staticmethod
+    def _cfg(off_text="", on_text=""):
+        def _get(key, default=None):
+            return {
+                "nai_chat_client.nsfw_directive_off": off_text,
+                "nai_chat_client.nsfw_directive_on": on_text,
+            }.get(key, default)
+        return _get
+
+    def test_off_uses_permissive_default(self):
+        ai = {}
+        inject_nai_nsfw_directive(self._cfg(), ai, nai_sfw_filter=False)
+        d = ai["nai_nsfw_directive"]
+        assert "露骨" in d and "explicit" in d  # 放开：如实表达露骨
+
+    def test_on_uses_sfw_default(self):
+        ai = {}
+        inject_nai_nsfw_directive(self._cfg(), ai, nai_sfw_filter=True)
+        d = ai["nai_nsfw_directive"]
+        assert "SFW" in d and "全年龄" in d  # 收紧：只出全年龄向
+
+    def test_off_and_on_differ(self):
+        off, on = {}, {}
+        inject_nai_nsfw_directive(self._cfg(), off, nai_sfw_filter=False)
+        inject_nai_nsfw_directive(self._cfg(), on, nai_sfw_filter=True)
+        assert off["nai_nsfw_directive"] != on["nai_nsfw_directive"]
+
+    def test_config_override_off(self):
+        ai = {}
+        inject_nai_nsfw_directive(self._cfg(off_text="自定义放开指令"), ai, nai_sfw_filter=False)
+        assert ai["nai_nsfw_directive"] == "自定义放开指令"
+
+    def test_config_override_on(self):
+        ai = {}
+        inject_nai_nsfw_directive(self._cfg(on_text="自定义SFW指令"), ai, nai_sfw_filter=True)
+        assert ai["nai_nsfw_directive"] == "自定义SFW指令"
+
+    def test_always_sets_key(self):
+        # 模板引用了它，缺 key 会被判「未定义变量」——任何档位都必须落键
+        for flag in (True, False):
+            ai = {}
+            inject_nai_nsfw_directive(self._cfg(), ai, nai_sfw_filter=flag)
+            assert "nai_nsfw_directive" in ai and ai["nai_nsfw_directive"]

@@ -176,12 +176,17 @@ class TestNaiConfigIntegration:
         d = registry.variable_definitions["nai_director"]
         assert d.mode == "llm"
         template = d.values[0]
-        # 4 个注入占位符必须在场（被替换的就是这几个；拼错会导致 director 拿不到上下文/状态）
+        # 注入占位符必须在场（被替换的就是这几个；拼错会导致 director 拿不到上下文/状态/尺度指令）
         # 注意：意图由上游 translater 提炼后以 action_input 注入，故 director 引用 {nai_intent} 而非原始 {image_intent}
-        for ph in ("{nai_intent}", "{today_state}", "{current_datetime}", "{recent_chat_context_30}"):
+        #      nai_nsfw_directive 由 inject_nai_nsfw_directive 按 /nai nsfw 开关注入（off=容忍所有 nsfw / on=SFW）
+        for ph in (
+            "{nai_intent}", "{today_state}", "{current_datetime}",
+            "{recent_chat_context_30}", "{nai_nsfw_directive}",
+        ):
             assert ph in template, f"nai_director 模板缺少占位符 {ph}"
-        # nai_intent 不再是 custom variable（改由 inject_nai_intent 代码注入），故不应出现在变量定义里
+        # nai_intent / nai_nsfw_directive 不是 custom variable（改由代码注入），故不应出现在变量定义里
         assert "nai_intent" not in registry.variable_definitions
+        assert "nai_nsfw_directive" not in registry.variable_definitions
         # translater 模板存在于 [nai_chat_client].intent_refine_template，且吃原始 image_intent + 聊天上下文
         refine_tmpl = config["nai_chat_client"]["intent_refine_template"]
         assert "{image_intent}" in refine_tmpl

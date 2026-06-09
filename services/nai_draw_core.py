@@ -116,6 +116,57 @@ def _is_degenerate_llm_output(text: str) -> str:
 
 # ──────────────── NAI 运行时设置注入 ────────────────
 
+# NSFW 开关指令（喂给 nai_director 大脑的「审核尺度」段，由 {nai_nsfw_directive} 占位符引用）。
+# off（SFW 过滤关）→ 容忍所有 nsfw：大脑按意图如实表达露骨 tag，不自我设限。
+# on （SFW 过滤开）→ 只产出全年龄向内容；后处理 sanitize_sfw_prompt 再兜一道。
+# 未成年护栏不在此处——它在模板里写死、与开关无关，任何档位都不放开。
+_NSFW_DIRECTIVE_OFF_DEFAULT = (
+    "露骨内容已开放：按意图如实表达，需要时直接输出 explicit 性相关 tag"
+    "（nude / naked / nipples / pussy / sex / cum 等均可），不要自我设限、"
+    "不要回避用户明确要求的露骨要素；画面含露骨内容时在最前加 nsfw 分级 tag"
+    "（如 nsfw / explicit）。轻量暴露同样照常表达。"
+)
+_NSFW_DIRECTIVE_ON_DEFAULT = (
+    "SFW 模式：只输出全年龄向内容，不得出现任何露骨性相关 tag"
+    "（nude / naked / nipples / pussy / sex / explicit 等）；"
+    "连轻量暴露（bikini / swimsuit / lingerie / cleavage 等）也尽量避免，"
+    "改用日常着装表达。"
+)
+
+
+def inject_nai_nsfw_directive(
+        get_config: ConfigGetter,
+        action_inputs: dict[str, Any],
+        *,
+        nai_sfw_filter: bool,
+        log_prefix: str = "",
+) -> None:
+    """把 NSFW 开关（/nai nsfw）状态翻译成给 director 大脑的尺度指令，伪注入
+    action_inputs["nai_nsfw_directive"]（原地修改）。
+
+    nai_director 模板「审核安全」段引用 {nai_nsfw_directive}：filter 关 → 容忍所有 nsfw
+    指令；filter 开 → SFW 指令。指令文本可由 config 覆盖（nai_chat_client.nsfw_directive_off /
+    nsfw_directive_on），留空则用内置默认。
+
+    仿 inject_nai_runtime_inputs：已解析字面量（无占位符），解析器把无依赖 action_input 直接
+    灌进 resolved_context，无需登记进 action_parameter_names。仅 NAI 预设路径调用。
+    /nai0 直发时 director 旁路，注了也不影响（模板不跑）。
+    """
+    if nai_sfw_filter:
+        directive = str(
+            get_config("nai_chat_client.nsfw_directive_on", "") or ""
+        ).strip() or _NSFW_DIRECTIVE_ON_DEFAULT
+    else:
+        directive = str(
+            get_config("nai_chat_client.nsfw_directive_off", "") or ""
+        ).strip() or _NSFW_DIRECTIVE_OFF_DEFAULT
+    action_inputs["nai_nsfw_directive"] = directive
+    logger.info(
+        f"{log_prefix} 注入 NSFW 指令: sfw_filter={nai_sfw_filter}, "
+        f"directive={short_repr(directive)}"
+    )
+
+
 def inject_nai_runtime_inputs(
         action_inputs: dict[str, Any],
         *,
@@ -546,6 +597,8 @@ async def resolve_to_payload(
                     logger.info(f"{log_prefix} 已选画风参考图 → 本次画师串让位（图优先）")
                 effective_artist = ""
         inject_nai_runtime_inputs(action_inputs, nai_artist=effective_artist, nai_size=nai_size, log_prefix=log_prefix)
+        # NSFW 开关 → director 尺度指令（filter 关=容忍所有 nsfw / 开=SFW）；伪注入 {nai_nsfw_directive}
+        inject_nai_nsfw_directive(get_config, action_inputs, nai_sfw_filter=nai_sfw_filter, log_prefix=log_prefix)
         # translater：提炼意图（剥离叙事/口癖），结果同时供下方检索 query 和 nai_director；
         # 取最近聊天上下文喂 translater（/nai0 直发时下方会跳过提炼，这里取了也不浪费——有缓存）
         _recent_ctx = ""

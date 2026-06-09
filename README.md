@@ -297,18 +297,19 @@ NAI 不支持 `upload`（NAI Chat 接口不需要图片 URL 输入）。
 | `/dr switch <on\|off>` | 运行时开关生图功能，自动写回 config.toml |
 | `/nai set [代号]` | 查看 / 切换 NAI 模型全局覆盖（如 `/nai set 4.5`；`/nai set off` 取消） |
 | `/nai models` | 列出可用 NAI 模型代号 + 各预设自带 model |
-| `/nai nsfw [on\|off]` | 查看 / 开关 SFW 过滤（开=剔除擦边 tag；默认关，允许轻量暴露） |
+| `/nai nsfw [on\|off]` | 查看 / 开关 SFW 过滤。**off（默认）= 放开**：大脑按意图如实表达露骨内容、后处理不删；**on = SFW**：大脑只产出全年龄向、后处理再剔除擦边 tag。未成年是硬底线，任何档位都不放开 |
 | `/nai art [序号\|名称\|off]` | 查看 / 切换文本画师串预设（读 `nai_artist_presets`）；无参时菜单并列显示画师串 + 画风图 |
 | `/nai art photo [序号...\|off]` | 选画风参考图（可多选组合多图 vibe，如 `/nai art photo 1 2`，最多 4 张）；与画师串互斥、图优先；`off` 取消 |
 | `/nai art photo save <名字>` | 引用 / 附带一张图存入画风图库（落盘 `reference_images/`，存完立即可 `/nai art photo` 选，无需配 config / 重启） |
 | `/nai size [v\|h\|s\|auto]` | 查看 / 切换出图尺寸（竖 / 横 / 方 / 跟随比例） |
 | `/nai0 <英文 tag>` | 直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，自动套质量词 / 画师串 / 负面词 / 尺寸 |
 | `/nai 随机[自拍]` | 随机出图：随机创作方向交给 `nai_director` 自由发挥，`自拍` 走自拍构图 |
+| `/nai 描述 <文本>` | 描述出图：把文字描述当意图注入 `nai_director` 链路（与 `/nai 随机` 同路，意图来自用户），自动套质量词 / 画师串 / 负面词 / 尺寸 |
 | `/nai 反推` | 把图片反推成 Danbooru tag（先读 PNG 元数据，未命中走 WD14 在线兜底）；发命令时附带图或引用一张图片消息 |
 
 所有命令都受 `permission_control.command_user_list` 约束。`/nai set` / `art` / `size` / `nsfw` 切换成功但写回失败时，本次会话仍生效，下次启动回滚。
 
-`/nai0` / `/nai 随机` 是 NAI 专属命令：当前激活预设是 NAI 时用它，否则自动回落到首个 NAI 预设；它们复用与 Action 同一套出图核心（`services/nai_draw_core`）。
+`/nai0` / `/nai 随机` / `/nai 描述` 是 NAI 专属命令：当前激活预设是 NAI 时用它，否则自动回落到首个 NAI 预设；它们复用与 Action 同一套出图核心（`services/nai_draw_core`）。
 
 ### 出图护栏（仅 Action）
 
