@@ -108,6 +108,41 @@ def build_failed_message(detail: Optional[str], wd14_enabled: bool) -> str:
     return f"{base}{hint}"
 
 
+def build_reverse_service(retag_cfg: dict, wd14_enabled: bool) -> "nai_retag_reverser.ReverseService":
+    """按配置组装反推服务；WD14 客户端延迟构造（软依赖 gradio_client）。
+
+    /nai 反推（NaiRetagCommand）与 /nai 反推 重绘（NaiRetagRedrawCommand）共用，避免两处重复。
+    """
+    wd14_client = None
+    if wd14_enabled:
+        try:
+            from ..clients.wd14_client import WD14Client
+
+            spaces = retag_cfg.get("wd14_spaces") or None
+            wd14_client = WD14Client(
+                timeout=float(retag_cfg.get("wd14_timeout", 60) or 60),
+                proxy=str(retag_cfg.get("wd14_proxy", "") or ""),
+                spaces_config=spaces,
+                insecure_ssl=bool(retag_cfg.get("wd14_insecure_ssl", False)),
+            )
+        except Exception as exc:
+            logger.warning(f"[nai_retag] WD14 客户端构造失败，仅用元数据反推: {exc}")
+            wd14_client = None
+
+    return nai_retag_reverser.ReverseService(
+        wd14_client=wd14_client,
+        wd14_threshold=float(retag_cfg.get("wd14_threshold", 0.35) or 0.35),
+        wd14_character_threshold=float(retag_cfg.get("wd14_character_threshold", 0.8) or 0.8),
+        wd14_enabled=wd14_enabled,
+    )
+
+
+# /nai 反推 命令 pattern（提为模块常量，便于与 /nai 反推 重绘 做互斥回归测试）。
+# 放宽以容图占位符；负向先行 (?!\s+重绘) 把「重绘」让给 NaiRetagRedrawCommand
+# （框架命令分发只取首个匹配，两 pattern 必须互斥）。
+NAI_RETAG_PATTERN = r"^.*?/nai\s+反推(?!\s+重绘)(?:\s|\[|$)"
+
+
 class NaiRetagCommand(BaseCommand):
     """图片反推：/nai 反推 —— 读图片自带 prompt（元数据），未命中走 WD14 兜底。"""
 
@@ -116,8 +151,8 @@ class NaiRetagCommand(BaseCommand):
     # 注意：框架用 message.processed_plain_text 做命令匹配（src/chat/message_receive/bot.py），
     # 带图/引用图时该文本会被图占位符（如 [回复…的消息：…]、[picid:…]、[图片]）污染、且占位符常排在命令词前，
     # 故不能用 ^/nai\s+反推$ 严格锚定首尾（带图必匹配失败、命令不触发）。
-    # 这里放宽：允许命令词前后有图占位符等内容，但「反推」后须接 空白/方括号/行尾，防 /nai 反推xxx 粘连误匹配。
-    command_pattern = r"^.*?/nai\s+反推(?:\s|\[|$)"
+    # pattern 见模块常量 NAI_RETAG_PATTERN（放宽容图占位符 + 负向先行排除「重绘」让给反推重绘命令）。
+    command_pattern = NAI_RETAG_PATTERN
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         deny = _deny_if_no_permission(self)
@@ -148,7 +183,7 @@ class NaiRetagCommand(BaseCommand):
             return True, "retag 解码失败", 1
 
         wd14_enabled = bool(retag_cfg.get("wd14_enabled", True))
-        service = self._build_service(retag_cfg, wd14_enabled)
+        service = build_reverse_service(retag_cfg, wd14_enabled)
 
         try:
             result = await service.reverse(image_bytes)
@@ -169,28 +204,3 @@ class NaiRetagCommand(BaseCommand):
         # failed：按 detail 给友好提示
         await self.send_text(build_failed_message(result.detail, wd14_enabled))
         return True, f"retag 失败({result.detail})", 1
-
-    def _build_service(self, retag_cfg: dict, wd14_enabled: bool) -> "nai_retag_reverser.ReverseService":
-        """按配置组装反推服务；WD14 客户端延迟构造（软依赖 gradio_client）。"""
-        wd14_client = None
-        if wd14_enabled:
-            try:
-                from ..clients.wd14_client import WD14Client
-
-                spaces = retag_cfg.get("wd14_spaces") or None
-                wd14_client = WD14Client(
-                    timeout=float(retag_cfg.get("wd14_timeout", 60) or 60),
-                    proxy=str(retag_cfg.get("wd14_proxy", "") or ""),
-                    spaces_config=spaces,
-                    insecure_ssl=bool(retag_cfg.get("wd14_insecure_ssl", False)),
-                )
-            except Exception as exc:
-                logger.warning(f"[nai_retag] WD14 客户端构造失败，仅用元数据反推: {exc}")
-                wd14_client = None
-
-        return nai_retag_reverser.ReverseService(
-            wd14_client=wd14_client,
-            wd14_threshold=float(retag_cfg.get("wd14_threshold", 0.35) or 0.35),
-            wd14_character_threshold=float(retag_cfg.get("wd14_character_threshold", 0.8) or 0.8),
-            wd14_enabled=wd14_enabled,
-        )

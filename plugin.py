@@ -14,6 +14,7 @@ from .components.nai_commands import (
     NaiModelsCommand,
     NaiNsfwCommand,
     NaiRandomCommand,
+    NaiRetagRedrawCommand,
     NaiSetCommand,
     NaiSizeCommand,
 )
@@ -748,5 +749,6 @@ class BizyAirGenerateImagePlugin(BasePlugin):
         components.append((Nai0Command.get_command_info(), Nai0Command))
         components.append((NaiRandomCommand.get_command_info(), NaiRandomCommand))
         components.append((NaiDescribeCommand.get_command_info(), NaiDescribeCommand))
+        components.append((NaiRetagRedrawCommand.get_command_info(), NaiRetagRedrawCommand))
         components.append((NaiRetagCommand.get_command_info(), NaiRetagCommand))
         return components

@@ -11,6 +11,7 @@
 - /nai0 <英文 tag>     直发：跳过 LLM 大脑，原始 Danbooru tag 当主体，套包装层
 - /nai 随机[自拍]      随机：把场景交给 nai_director 自由发挥
 - /nai 描述 <文本>     描述：把用户描述当意图注入 director 路径出图
+- /nai 反推 重绘 +图   反推重绘：反推图片 tag → 暴露提示词 → 用它直发出图（= 反推 + /nai0）
 
 均遵循 bizyair 范式：改 GenerateImageAction 类属性（立即生效）+ save_toml_with_format 写回标量（持久）。
 """
@@ -23,7 +24,11 @@ from src.common.logger import get_logger
 from src.plugin_system import BaseCommand
 
 from .generate_image_action import GenerateImageAction
-from .nai_retag_command import extract_image_base64_from_message as _extract_image_from_message
+from .nai_retag_command import (
+    build_failed_message,
+    build_reverse_service,
+    extract_image_base64_from_message as _extract_image_from_message,
+)
 from ..services import nai_draw_core
 from ..services import nai_random_scene
 from ..services import nai_settings
@@ -507,3 +512,77 @@ class NaiDescribeCommand(BaseCommand):
 
         logger.info(f"[nai_describe] intent={intent!r}")
         return await _run_nai_draw(self, action_inputs={"image_intent": intent}, log_label="nai_describe")
+
+
+# /nai 反推 重绘 命令 pattern（提为模块常量，与 nai_retag_command.NAI_RETAG_PATTERN 互斥：
+# 那条用 (?!\s+重绘) 让位，框架命令分发只取首个匹配，两者必须互斥）。
+NAI_RETAG_REDRAW_PATTERN = r"^.*?/nai\s+反推\s+重绘(?:\s|\[|$)"
+
+
+class NaiRetagRedrawCommand(BaseCommand):
+    """反推重绘：/nai 反推 重绘 + 一张图 —— 反推出 Danbooru tag，暴露提示词后用它直发出图。
+
+    = /nai 反推（取图 → PNG 元数据 / WD14 反推）+ /nai0（反推 tag 当 nai_raw_tags 直发，
+    跳过 director、套质量词/画师串/负面词/尺寸）。命中后先把反推提示词发出来（透明可复制），再出图。
+
+    带图消息的 processed_plain_text 含图占位符，故 pattern 宽松（与 /nai 反推 同策略）；
+    与 NaiRetagCommand 互斥——那条 pattern 用 (?!\\s+重绘) 把「重绘」让给这里（框架命令分发只取首个匹配）。
+    """
+
+    command_name = "nai_retag_redraw"
+    command_description = "反推图片提示词并用它直接重绘（/nai 反推 重绘 + 引用/附带一张图）"
+    command_pattern = NAI_RETAG_REDRAW_PATTERN
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        deny = _deny_if_no_permission(self)
+        if deny:
+            return True, deny, 1
+
+        retag_cfg = self.get_config("retag", {}) or {}
+        if not isinstance(retag_cfg, dict):
+            retag_cfg = {}
+        if not bool(retag_cfg.get("enabled", True)):
+            await self.send_text("反推功能未启用（可在 config.toml 的 [retag] 开启 enabled）。")
+            return True, "反推重绘 未启用", 1
+
+        # 取图（命令自带图 / 引用回复的图），与 /nai 反推 同源
+        image_base64 = _extract_image_from_message(self.message)
+        if not image_base64:
+            await self.send_text(
+                "没找到要反推重绘的图片。\n"
+                "用法：发「/nai 反推 重绘」时附带一张图片，或引用一张图片消息再发「/nai 反推 重绘」。"
+            )
+            return True, "反推重绘 无图片", 1
+
+        try:
+            image_bytes = base64.b64decode(image_base64.split(",", 1)[-1])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[nai_retag_redraw] 图片 base64 解码失败: {exc}")
+            await self.send_text("图片数据解析失败，请换一张图再试。")
+            return True, "反推重绘 解码失败", 1
+
+        wd14_enabled = bool(retag_cfg.get("wd14_enabled", True))
+        service = build_reverse_service(retag_cfg, wd14_enabled)
+        try:
+            result = await service.reverse(image_bytes)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[nai_retag_redraw] 反推异常: {exc}\n{traceback.format_exc()}")
+            await self.send_text("反推过程出错了，请稍后再试。")
+            return True, "反推重绘 异常", 1
+
+        logger.info(f"[nai_retag_redraw] source={result.source}, prompt={short_repr(result.prompt)}")
+
+        if result.source not in ("metadata", "wd14") or not str(result.prompt or "").strip():
+            # 反推失败：给与 /nai 反推 一致的友好提示，不出图
+            await self.send_text(build_failed_message(result.detail, wd14_enabled))
+            return True, f"反推重绘 反推失败({result.detail})", 1
+
+        tags = result.prompt.strip()
+        source_label = "图片自带元数据" if result.source == "metadata" else "WD14 反推"
+        # 先暴露反推提示词（透明、可复制），再用它直发出图
+        await self.send_text(
+            f"🔁 反推重绘 | 来源：{source_label}\n反推提示词：\n{tags}\n（用它直接出图中…）"
+        )
+
+        # nai_raw_tags 直发：复用 /nai0 同款链路（跳过 director，套质量词/画师串/负面词/尺寸）
+        return await _run_nai_draw(self, action_inputs={"nai_raw_tags": tags}, log_label="nai_retag_redraw")
