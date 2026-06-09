@@ -284,7 +284,7 @@ class NaiArtCommand(BaseCommand):
             persisted = nai_settings.save_setting(nai_settings.NAI_ARTIST_KEY, prompt)
             tip = "已保存到配置。" if persisted else "(写回配置失败，重启后恢复)"
             vibe_warn = "\n⚠️ 当前已选画风参考图，画师串会被它覆盖；如需用画师串请先 /nai art photo off" if cur_vibe else ""
-            await self.send_text(f"✅ NAI 画师串已切换为「{name}」：\n  {prompt}\n{tip}{vibe_warn}")
+            await self.send_text(f"✅ NAI 画师串已切换为「{name}」。{tip}{vibe_warn}")
             return True, f"切换 NAI 画师串 -> {name}", 1
 
         await self.send_text(
