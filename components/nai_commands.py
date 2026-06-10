@@ -39,10 +39,13 @@ from ..services.log_utils import short_repr
 logger = get_logger("bizyair_generate_image_plugin")
 
 
-def _deny_if_no_permission(command: BaseCommand) -> Optional[str]:
-    """统一命令权限检查，无权限时返回拒绝原因，有权限返回 None。"""
+def _deny_if_no_permission(command: BaseCommand, *, public: bool = False) -> Optional[str]:
+    """统一命令权限检查，无权限时返回拒绝原因，有权限返回 None。
+
+    public=True 用于出图 / 反推等公开命令：跳过命令白/黑名单，仅全局黑名单仍拦。
+    """
     user_id = command.message.message_info.user_info.user_id
-    has_permission, deny_reason = permission_manager.check_command_permission(str(user_id))
+    has_permission, deny_reason = permission_manager.check_command_permission(str(user_id), public=public)
     return None if has_permission else (deny_reason or "无权限")
 
 
@@ -444,7 +447,7 @@ class Nai0Command(BaseCommand):
     command_pattern = r"^/nai0(?:\s+(?P<tags>.+))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
-        deny = _deny_if_no_permission(self)
+        deny = _deny_if_no_permission(self, public=True)
         if deny:
             return True, deny, 1
 
@@ -473,7 +476,7 @@ class NaiRandomCommand(BaseCommand):
     command_pattern = r"^/nai\s+随机\s*(?P<selfie>自拍)?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
-        deny = _deny_if_no_permission(self)
+        deny = _deny_if_no_permission(self, public=True)
         if deny:
             return True, deny, 1
 
@@ -496,7 +499,7 @@ class NaiDescribeCommand(BaseCommand):
     command_pattern = r"^/nai\s+描述(?:\s+(?P<intent>.+))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
-        deny = _deny_if_no_permission(self)
+        deny = _deny_if_no_permission(self, public=True)
         if deny:
             return True, deny, 1
 
@@ -534,7 +537,7 @@ class NaiRetagRedrawCommand(BaseCommand):
     command_pattern = NAI_RETAG_REDRAW_PATTERN
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
-        deny = _deny_if_no_permission(self)
+        deny = _deny_if_no_permission(self, public=True)
         if deny:
             return True, deny, 1
 

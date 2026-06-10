@@ -38,14 +38,15 @@ class PermissionManager:
         self.action_user_list = self._normalize_user_id_set(action_user_list)
         self.action_user_list_mode = self._normalize_mode(action_user_list_mode)
 
-    def check_command_permission(self, user_id: str) -> tuple[bool, str | None]:
+    def check_command_permission(self, user_id: str, *, public: bool = False) -> tuple[bool, str | None]:
         """
         检查指定用户是否拥有命令调用权限
 
         :param user_id: str，待检查的用户 ID
+        :param public: bool，是否为公开命令（出图 / 反推等）；True 时跳过命令白/黑名单，仅全局黑名单仍生效
         :return: tuple[bool, str | None]，是否允许调用及失败原因
         """
-        return self._check_permission(user_id=user_id, component_type="command")
+        return self._check_permission(user_id=user_id, component_type="command", public=public)
 
     def check_action_permission(self, user_id: str) -> tuple[bool, str | None]:
         """
@@ -61,17 +62,23 @@ class PermissionManager:
             *,
             user_id: str,
             component_type: PermissionComponentType,
+            public: bool = False,
     ) -> tuple[bool, str | None]:
         """
         按组件类型执行统一的权限检查逻辑
 
         :param user_id: str，待检查的用户 ID
         :param component_type: PermissionComponentType，待检查的组件类型
+        :param public: bool，公开组件跳过名单检查（仅全局黑名单仍生效）
         :return: tuple[bool, str | None]，是否允许调用及失败原因
         """
         normalized_user_id = str(user_id).strip()
         if normalized_user_id in self.global_blacklist:
             return False, f"用户 {normalized_user_id} 已被全局禁止使用该插件"
+
+        # 公开组件（出图 / 反推命令）：过了全局黑名单即放行，不受命令白/黑名单约束
+        if public:
+            return True, None
 
         user_list, list_mode, component_label = self._get_component_rules(component_type)
         is_in_list = normalized_user_id in user_list

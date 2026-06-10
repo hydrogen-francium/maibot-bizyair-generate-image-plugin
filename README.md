@@ -308,7 +308,7 @@ NAI 不支持 `upload`（NAI Chat 接口不需要图片 URL 输入）。
 | `/nai 反推` | 把图片反推成 Danbooru tag（先读 PNG 元数据，未命中走 WD14 在线兜底）；发命令时附带图或引用一张图片消息 |
 | `/nai 反推 重绘` | 反推重绘：反推图片提示词 → 先把提示词发出来 → 用它直发出图（= `/nai 反推` + `/nai0`）；发命令时附带图或引用一张图片消息 |
 
-所有命令都受 `permission_control.command_user_list` 约束。`/nai set` / `art` / `size` / `nsfw` 切换成功但写回失败时，本次会话仍生效，下次启动回滚。
+**权限分级**：出图 / 反推命令（`/nai0`、`/nai 随机`、`/nai 描述`、`/nai 反推`、`/nai 反推 重绘`）对所有人开放，仅受 `permission_control.global_blacklist`（全局黑名单）约束；其余管理类命令（`/nai set` / `models` / `art` / `size` / `nsfw`、`/dr ...`）受 `permission_control.command_user_list` 约束。`/nai set` / `art` / `size` / `nsfw` 切换成功但写回失败时，本次会话仍生效，下次启动回滚。
 
 `/nai0` / `/nai 随机` / `/nai 描述` / `/nai 反推 重绘` 是 NAI 专属命令：当前激活预设是 NAI 时用它，否则自动回落到首个 NAI 预设；它们复用与 Action 同一套出图核心（`services/nai_draw_core`）。
 
