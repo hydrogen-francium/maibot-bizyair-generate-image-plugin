@@ -38,11 +38,21 @@ from services.nai_prompt_memory import (
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
 
 # 与 config.toml 的 nai_quality / nai_negative 逐字一致（改 config 同步改这里）
-NAI_QUALITY = "very aesthetic, masterpiece, best quality, amazing quality, very detailed, absurdres"
+NAI_QUALITY = (
+    "5::best quality, ultra-detailed, absurdres, very aesthetic, detailed, masterpiece::, "
+    "1.2::8k, 4k, highres::, 1.8::hyperdetailed skin::, 1.1::detailed eyes, detailed face::, "
+    "2.5::highly detailed texture, sharp focus, perfect anatomy::, 1.2::cinematic lighting::, "
+    "-1.8::flat_color::, -2::artist collaboration, anime coloring::"
+)
 NAI_NEGATIVE = (
-    "lowres, worst quality, low quality, bad anatomy, bad hands, missing fingers, "
-    "extra digits, fewer digits, jpeg artifacts, signature, watermark, username, "
-    "blurry, artistic error, scan, abstract"
+    "text, english text, logo, lettering, 1::artist collaboration, multiple views, thick outline::, "
+    "lowres, {bad}, {bad feet}, bad hands, error, fewer, extra, missing, worst quality, "
+    "jpeg artifacts, bad quality, watermark, displeasing, signature, extra digits, artistic error, "
+    "username, scan, [abstract], weibo watermark, chibi, blush, chibi inset, doll, stuffed toy, slimy, "
+    "dripping, sweat, {censoring}, lowres, artistic error, scan artifacts, worst quality, bad quality, "
+    "jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, "
+    "blank page, lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, "
+    "multiple views, very displeasing, too many watermarks, negative space, blank page"
 )
 
 
